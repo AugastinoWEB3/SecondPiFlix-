@@ -1,0 +1,6 @@
+{
+  "name": "PiFlix+",
+  "description": "Watch More. Discover More. Experience More. Complete movie and TV series streaming platform with Pi Network ecosystem integration and Admin Dashboard.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
