@@ -28,6 +28,7 @@ export interface Movie {
   description: string;
   poster: string;
   backdrop: string;
+  coverImageUrl?: string;
   trailerUrl: string;
   videoUrl: string;
   hlsUrl?: string;
@@ -41,9 +42,11 @@ export interface Movie {
   rating: number; // 0 to 10
   ageClassification: AgeClassification;
   isPremium: boolean;
+  accessType?: 'free' | 'premium';
   isFeatured: boolean;
   isTrending: boolean;
   isPublished: boolean;
+  published?: boolean;
   qualityBadge: 'HD' | 'FHD' | '4K';
   viewsCount: number;
   likesCount: number;
@@ -58,6 +61,7 @@ export interface TVSeries {
   description: string;
   poster: string;
   backdrop: string;
+  coverImageUrl?: string;
   trailerUrl: string;
   year: number;
   genre: string[];
@@ -68,9 +72,11 @@ export interface TVSeries {
   rating: number;
   ageClassification: AgeClassification;
   isPremium: boolean;
+  accessType?: 'free' | 'premium';
   isFeatured: boolean;
   isTrending: boolean;
   isPublished: boolean;
+  published?: boolean;
   qualityBadge: 'HD' | 'FHD' | '4K';
   viewsCount: number;
   likesCount: number;
@@ -78,6 +84,36 @@ export interface TVSeries {
   seasonsCount: number;
   createdAt: string;
   updatedAt: string;
+  episodes?: Episode[];
+}
+
+export interface ContentItem {
+  id: string;
+  title: string;
+  description: string;
+  type: 'movie' | 'series';
+  coverImageUrl: string;
+  videoUrl: string;
+  trailerUrl?: string;
+  year: number;
+  genre: string;
+  language: string;
+  rating: number;
+  quality: 'HD' | 'FHD' | '4K';
+  accessType: 'free' | 'premium';
+  published: boolean;
+  createdAt: string;
+  updatedAt: string;
+  episodes?: {
+    id: string;
+    episodeNumber: number;
+    title: string;
+    description?: string;
+    thumbnail?: string;
+    videoUrl: string;
+    duration?: number;
+    skipIntroSec?: number;
+  }[];
 }
 
 export interface Season {

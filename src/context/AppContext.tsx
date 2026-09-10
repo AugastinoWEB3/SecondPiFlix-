@@ -1,6 +1,10 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { Movie, TVSeries, Episode, User, AppSettings, WatchHistoryItem, WatchlistItem, LikedItem, AppNotification, ContentType } from '../types';
+import { Movie, TVSeries, Episode, User, AppSettings, WatchHistoryItem, WatchlistItem, LikedItem, AppNotification, ContentType, ContentItem } from '../types';
 import { initialSettings, defaultUsers } from '../data/mockData';
+import { subscribeToContent } from '../lib/firebaseContent';
+import { auth } from '../lib/firebase';
+import { onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
+import { loginAdminWithEmail, loginAdminWithGoogle, registerAdminAccount, logoutAdminUser, verifyTokenWithBackend } from '../lib/firebaseAuth';
 
 interface AppContextType {
   // Theme
@@ -17,6 +21,12 @@ interface AppContextType {
   login: (username: string, pass?: string) => Promise<boolean>;
   logout: () => void;
   isAdmin: boolean;
+  adminToken: string | null;
+  adminLogin: (email: string, password?: string) => Promise<{ success: boolean; error?: string }>;
+  adminLoginGoogle: () => Promise<{ success: boolean; error?: string }>;
+  adminRegister: (email: string, password: string) => Promise<{ success: boolean; error?: string }>;
+  adminLogout: () => void;
+  firebaseAdminUser: FirebaseUser | null;
 
   // Content Data
   movies: Movie[];
@@ -106,6 +116,90 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [selectedPlanForPayment, setSelectedPlanForPayment] = useState<'monthly' | 'annual'>('monthly');
 
   const [searchQuery, setSearchQuery] = useState('');
+  const [adminToken, setAdminToken] = useState<string | null>(null);
+  const [isAdmin, setIsAdmin] = useState<boolean>(false);
+  const [firebaseAdminUser, setFirebaseAdminUser] = useState<FirebaseUser | null>(null);
+
+  // Real Firebase Auth listener for Admin role verification
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (fbUser) => {
+      if (fbUser) {
+        try {
+          const token = await fbUser.getIdToken();
+          const verification = await verifyTokenWithBackend(token);
+          if (verification.isAdmin) {
+            setIsAdmin(true);
+            setAdminToken(token);
+            setFirebaseAdminUser(fbUser);
+            localStorage.setItem('piflix_admin_token', token);
+            setCurrentUser(prev => ({
+              ...prev,
+              id: fbUser.uid,
+              username: fbUser.displayName || fbUser.email?.split('@')[0] || 'Administrator',
+              email: fbUser.email || '',
+              role: 'admin'
+            }));
+            return;
+          }
+        } catch (err) {
+          console.warn('Firebase Auth state verification error:', err);
+        }
+      }
+
+      // If user is not authenticated or lacks administrator role
+      setIsAdmin(false);
+      setAdminToken(null);
+      setFirebaseAdminUser(null);
+      localStorage.removeItem('piflix_admin_token');
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  const adminLogin = async (email: string, password?: string): Promise<{ success: boolean; error?: string }> => {
+    if (!password) {
+      return { success: false, error: 'Password is required' };
+    }
+    const result = await loginAdminWithEmail(email, password);
+    if (result.success && result.token) {
+      setIsAdmin(true);
+      setAdminToken(result.token);
+      if (result.user) setFirebaseAdminUser(result.user);
+      return { success: true };
+    }
+    return { success: false, error: result.error || 'Authentication failed' };
+  };
+
+  const adminLoginGoogle = async (): Promise<{ success: boolean; error?: string }> => {
+    const result = await loginAdminWithGoogle();
+    if (result.success && result.token) {
+      setIsAdmin(true);
+      setAdminToken(result.token);
+      if (result.user) setFirebaseAdminUser(result.user);
+      return { success: true };
+    }
+    return { success: false, error: result.error || 'Google authentication failed' };
+  };
+
+  const adminRegister = async (email: string, password: string): Promise<{ success: boolean; error?: string }> => {
+    const result = await registerAdminAccount(email, password);
+    if (result.success && result.token) {
+      setIsAdmin(true);
+      setAdminToken(result.token);
+      if (result.user) setFirebaseAdminUser(result.user);
+      return { success: true };
+    }
+    return { success: false, error: result.error || 'Registration failed' };
+  };
+
+  const adminLogout = async () => {
+    await logoutAdminUser();
+    setIsAdmin(false);
+    setAdminToken(null);
+    setFirebaseAdminUser(null);
+    setCurrentUser(defaultUsers[1]);
+    setActiveTab('home');
+  };
 
   // Update theme on html element
   useEffect(() => {
@@ -125,20 +219,107 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     localStorage.setItem('piflix_current_user', JSON.stringify(currentUser));
   }, [currentUser]);
 
+  // Helper to merge ContentItems into Movie / TVSeries state
+  const mergeContentItems = (items: ContentItem[]) => {
+    if (!items || items.length === 0) return;
+
+    const publishedMovies = items.filter(i => i.type === 'movie' && i.published);
+    const publishedSeries = items.filter(i => i.type === 'series' && i.published);
+
+    if (publishedMovies.length > 0) {
+      setMovies(prev => {
+        const map = new Map(prev.map(m => [m.id, m]));
+        publishedMovies.forEach(item => {
+          map.set(item.id, {
+            id: item.id,
+            title: item.title,
+            description: item.description,
+            poster: item.coverImageUrl,
+            backdrop: item.coverImageUrl,
+            coverImageUrl: item.coverImageUrl,
+            videoUrl: item.videoUrl,
+            trailerUrl: item.trailerUrl || '',
+            year: item.year,
+            duration: 95,
+            genre: Array.isArray(item.genre) ? item.genre : [item.genre],
+            language: item.language,
+            country: 'International',
+            director: 'Creator',
+            cast: [],
+            rating: item.rating,
+            ageClassification: 'PG-13',
+            isPremium: item.accessType === 'premium',
+            accessType: item.accessType,
+            isFeatured: false,
+            isTrending: true,
+            isPublished: item.published,
+            published: item.published,
+            qualityBadge: item.quality,
+            viewsCount: 0,
+            likesCount: 0,
+            createdAt: item.createdAt,
+            updatedAt: item.updatedAt
+          });
+        });
+        return Array.from(map.values());
+      });
+    }
+
+    if (publishedSeries.length > 0) {
+      setSeriesList(prev => {
+        const map = new Map(prev.map(s => [s.id, s]));
+        publishedSeries.forEach(item => {
+          map.set(item.id, {
+            id: item.id,
+            title: item.title,
+            description: item.description,
+            poster: item.coverImageUrl,
+            backdrop: item.coverImageUrl,
+            coverImageUrl: item.coverImageUrl,
+            trailerUrl: item.trailerUrl || '',
+            year: item.year,
+            genre: Array.isArray(item.genre) ? item.genre : [item.genre],
+            language: item.language,
+            country: 'International',
+            director: 'Creator',
+            cast: [],
+            rating: item.rating,
+            ageClassification: 'PG-13',
+            isPremium: item.accessType === 'premium',
+            accessType: item.accessType,
+            isFeatured: false,
+            isTrending: true,
+            isPublished: item.published,
+            published: item.published,
+            qualityBadge: item.quality,
+            viewsCount: 0,
+            likesCount: 0,
+            seasonsCount: 1,
+            createdAt: item.createdAt,
+            updatedAt: item.updatedAt
+          });
+        });
+        return Array.from(map.values());
+      });
+    }
+  };
+
   // Load initial content & settings from API
   const refreshContent = async () => {
     try {
-      const [moviesRes, seriesRes, settingsRes, historyRes, watchlistRes, notifsRes] = await Promise.all([
-        fetch('/api/movies?publishedOnly=true').then(r => r.json()),
-        fetch('/api/series').then(r => r.json()),
-        fetch('/api/settings').then(r => r.json()),
-        fetch(`/api/history?userId=${currentUser.id}`).then(r => r.json()),
-        fetch(`/api/watchlist?userId=${currentUser.id}`).then(r => r.json()),
-        fetch('/api/notifications').then(r => r.json())
+      const [moviesRes, seriesRes, contentRes, settingsRes, historyRes, watchlistRes, notifsRes] = await Promise.all([
+        fetch('/api/movies?publishedOnly=true').then(r => r.json()).catch(() => []),
+        fetch('/api/series').then(r => r.json()).catch(() => []),
+        fetch('/api/content?publishedOnly=true').then(r => r.json()).catch(() => []),
+        fetch('/api/settings').then(r => r.json()).catch(() => null),
+        fetch(`/api/history?userId=${currentUser.id}`).then(r => r.json()).catch(() => []),
+        fetch(`/api/watchlist?userId=${currentUser.id}`).then(r => r.json()).catch(() => []),
+        fetch('/api/notifications').then(r => r.json()).catch(() => [])
       ]);
 
       if (Array.isArray(moviesRes)) setMovies(moviesRes);
       if (Array.isArray(seriesRes)) setSeriesList(seriesRes);
+      if (Array.isArray(contentRes)) mergeContentItems(contentRes);
       if (settingsRes && settingsRes.appName) setSettings(settingsRes);
       if (Array.isArray(historyRes)) setWatchHistory(historyRes);
       if (Array.isArray(watchlistRes)) setWatchlist(watchlistRes);
@@ -147,6 +328,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       console.warn('Backend fetch error, relying on initial state', err);
     }
   };
+
+  // Real-time Firestore sync: Any newly published content shows up instantly in the app!
+  useEffect(() => {
+    const unsubscribe = subscribeToContent((items) => {
+      mergeContentItems(items);
+    });
+    return () => unsubscribe();
+  }, []);
 
   useEffect(() => {
     refreshContent();
@@ -359,7 +548,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const unreadNotifsCount = notifications.filter(n => !n.read).length;
-  const isAdmin = currentUser.role === 'admin';
 
   return (
     <AppContext.Provider
@@ -373,6 +561,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         login,
         logout,
         isAdmin,
+        adminToken,
+        adminLogin,
+        adminLoginGoogle,
+        adminRegister,
+        adminLogout,
+        firebaseAdminUser,
         movies,
         seriesList,
         refreshContent,

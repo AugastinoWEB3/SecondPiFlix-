@@ -19,15 +19,15 @@ export const initialSettings: AppSettings = {
 export const defaultUsers: User[] = [
   {
     id: 'usr_admin',
-    username: 'piflix_admin',
-    email: 'admin@piflix.com',
+    username: 'Frank Gwaza (Owner)',
+    email: 'frank.gwaza.fg@gmail.com',
     profileImage: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
     role: 'admin',
     premiumStatus: true,
     subscriptionPlan: 'annual',
-    subscriptionExpiry: '2026-12-31T23:59:59Z',
-    piUsername: 'pioneer_master',
-    piWalletAddress: 'GD6K...PIFLIXADMIN',
+    subscriptionExpiry: '2030-12-31T23:59:59Z',
+    piUsername: 'frank_gwaza',
+    piWalletAddress: 'GD6K...FRANKGWAZA',
     createdAt: '2025-01-01T00:00:00Z',
     notificationSettings: {
       newMovies: true,

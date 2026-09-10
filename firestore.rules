@@ -1,0 +1,84 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // Secure Admin validation:
+    // Only real authenticated users in the /admins collection OR the primary owner can access admin functions
+    function isAdmin() {
+      return isSignedIn() && (
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        (request.auth.token.email != null && (
+          request.auth.token.email.lower() == 'frank.gwaza.fg@gmail.com' ||
+          request.auth.token.email == 'frank.gwaza.FG@gmail.com'
+        ))
+      );
+    }
+
+    function isValidAdmin(data) {
+      return data.email is string && data.email.size() <= 200 &&
+             data.role is string && data.role == 'admin' &&
+             data.createdAt is string && data.createdAt.size() <= 100;
+    }
+
+    function isValidContent(data) {
+      return data.title is string && data.title.size() > 0 && data.title.size() <= 300 &&
+             data.type is string && (data.type == 'movie' || data.type == 'series') &&
+             data.coverImageUrl is string && data.coverImageUrl.size() > 0 && data.coverImageUrl.size() <= 1500 &&
+             data.videoUrl is string && data.videoUrl.size() <= 1500 &&
+             data.year is number && data.year >= 1900 && data.year <= 2100 &&
+             data.rating is number && data.rating >= 0 && data.rating <= 10 &&
+             data.quality is string && (data.quality == 'HD' || data.quality == 'FHD' || data.quality == '4K') &&
+             data.accessType is string && (data.accessType == 'free' || data.accessType == 'premium') &&
+             data.published is bool &&
+             data.createdAt is string && data.createdAt.size() <= 100 &&
+             data.updatedAt is string && data.updatedAt.size() <= 100;
+    }
+
+    // Content collection (movies and series)
+    // Non-admins can only read published content.
+    // Only verified administrators can view drafts, create, update, or delete.
+    match /content/{contentId} {
+      allow get: if resource.data.published == true || isAdmin();
+      allow list: if resource.data.published == true || isAdmin();
+      allow create: if isAdmin() && isValidId(contentId) && isValidContent(incoming());
+      allow update: if isAdmin() && isValidId(contentId) && isValidContent(incoming());
+      allow delete: if isAdmin() && isValidId(contentId);
+    }
+
+    // Admin authorization collection (RBAC)
+    // Only administrators can list, create, or modify administrator accounts.
+    match /admins/{adminId} {
+      allow read: if isAdmin() || (isSignedIn() && request.auth.uid == adminId);
+      allow create, update: if isAdmin() && isValidId(adminId) && isValidAdmin(incoming());
+      allow delete: if isAdmin() && isValidId(adminId) && request.auth.uid != adminId;
+    }
+
+    // System connectivity health check
+    match /system/{docId} {
+      allow read: if true;
+      allow write: if false;
+    }
+  }
+}

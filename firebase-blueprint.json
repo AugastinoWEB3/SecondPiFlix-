@@ -1,0 +1,62 @@
+{
+  "entities": {
+    "content": {
+      "title": "ContentItem",
+      "description": "Movie or TV Series streaming metadata record",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string", "maxLength": 300 },
+        "description": { "type": "string", "maxLength": 5000 },
+        "type": { "type": "string", "enum": ["movie", "series"] },
+        "coverImageUrl": { "type": "string", "maxLength": 1000 },
+        "videoUrl": { "type": "string", "maxLength": 1000 },
+        "trailerUrl": { "type": "string", "maxLength": 1000 },
+        "year": { "type": "number" },
+        "genre": { "type": "string", "maxLength": 200 },
+        "language": { "type": "string", "maxLength": 100 },
+        "rating": { "type": "number" },
+        "quality": { "type": "string", "enum": ["HD", "FHD", "4K"] },
+        "accessType": { "type": "string", "enum": ["free", "premium"] },
+        "published": { "type": "boolean" },
+        "createdAt": { "type": "string", "maxLength": 100 },
+        "updatedAt": { "type": "string", "maxLength": 100 }
+      },
+      "required": [
+        "title",
+        "type",
+        "coverImageUrl",
+        "videoUrl",
+        "year",
+        "genre",
+        "language",
+        "rating",
+        "quality",
+        "accessType",
+        "published",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "admin": {
+      "title": "Admin",
+      "description": "Admin authorization entry",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string", "maxLength": 200 },
+        "role": { "type": "string", "enum": ["admin"] },
+        "createdAt": { "type": "string", "maxLength": 100 }
+      },
+      "required": ["email", "role"]
+    }
+  },
+  "firestore": {
+    "/content/{contentId}": {
+      "schema": "content",
+      "description": "Public and admin media metadata repository"
+    },
+    "/admins/{adminId}": {
+      "schema": "admin",
+      "description": "Admin RBAC authorization records"
+    }
+  }
+}

@@ -1,13 +1,360 @@
 import express, { Request, Response } from 'express';
 import path from 'path';
+import fs from 'fs';
+import crypto from 'crypto';
+import multer from 'multer';
 import { createServer as createViteServer } from 'vite';
 import { initialSettings, defaultUsers, sampleMovies, sampleSeries, sampleSeasons, sampleEpisodes, sampleAds } from './src/data/mockData';
-import { Movie, TVSeries, Season, Episode, User, WatchHistoryItem, WatchlistItem, LikedItem, ContentRatingReview, Subscription, PaymentRecord, AppSettings, AppNotification } from './src/types';
+import { Movie, TVSeries, Season, Episode, User, WatchHistoryItem, WatchlistItem, LikedItem, ContentRatingReview, Subscription, PaymentRecord, AppSettings, AppNotification, ContentItem } from './src/types';
 
 const app = express();
 const PORT = 3000;
 
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+
+// Ensure upload directories exist
+const uploadsDir = path.join(process.cwd(), 'public', 'uploads');
+const videosDir = path.join(uploadsDir, 'videos');
+const coversDir = path.join(uploadsDir, 'covers');
+if (!fs.existsSync(videosDir)) fs.mkdirSync(videosDir, { recursive: true });
+if (!fs.existsSync(coversDir)) fs.mkdirSync(coversDir, { recursive: true });
+
+// Configure Multer storage for large video files
+const videoStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, videosDir),
+  filename: (_req, file, cb) => {
+    const ext = path.extname(file.originalname) || '.mp4';
+    const baseName = path.basename(file.originalname, ext).replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 40);
+    cb(null, `vid_${Date.now()}_${baseName}${ext}`);
+  }
+});
+
+// Configure Multer storage for cover images
+const coverStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, coversDir),
+  filename: (_req, file, cb) => {
+    const ext = path.extname(file.originalname) || '.jpg';
+    const baseName = path.basename(file.originalname, ext).replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 40);
+    cb(null, `cover_${Date.now()}_${baseName}${ext}`);
+  }
+});
+
+const uploadVideo = multer({
+  storage: videoStorage,
+  limits: { fileSize: 2 * 1024 * 1024 * 1024 } // Up to 2GB video files
+});
+
+const uploadCover = multer({
+  storage: coverStorage,
+  limits: { fileSize: 30 * 1024 * 1024 } // Up to 30MB images
+});
+
+// Serve uploaded static assets
+app.use('/uploads', express.static(uploadsDir));
+
+// HTTP Range-request video streaming handler for uploaded videos (MP4, WebM, MKV, MOV)
+app.get('/uploads/videos/:filename', (req: Request, res: Response) => {
+  const safeFilename = path.basename(req.params.filename);
+  const filePath = path.join(videosDir, safeFilename);
+
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).json({ error: 'Video file not found' });
+  }
+
+  const stat = fs.statSync(filePath);
+  const fileSize = stat.size;
+  const range = req.headers.range;
+
+  const ext = path.extname(filePath).toLowerCase();
+  const mimeTypes: Record<string, string> = {
+    '.mp4': 'video/mp4',
+    '.webm': 'video/webm',
+    '.mkv': 'video/x-matroska',
+    '.mov': 'video/quicktime',
+    '.m4v': 'video/mp4'
+  };
+  const contentType = mimeTypes[ext] || 'video/mp4';
+
+  if (range) {
+    const parts = range.replace(/bytes=/, '').split('-');
+    const start = parseInt(parts[0], 10);
+    const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+    const chunkSize = (end - start) + 1;
+    const file = fs.createReadStream(filePath, { start, end });
+
+    res.writeHead(206, {
+      'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+      'Accept-Ranges': 'bytes',
+      'Content-Length': chunkSize,
+      'Content-Type': contentType,
+    });
+    file.pipe(res);
+  } else {
+    res.writeHead(200, {
+      'Content-Length': fileSize,
+      'Content-Type': contentType,
+      'Accept-Ranges': 'bytes',
+    });
+    fs.createReadStream(filePath).pipe(res);
+  }
+});
+
+// Firebase Config & Real Administrator Authentication
+const firebaseConfigFile = path.join(process.cwd(), 'firebase-applet-config.json');
+let firebaseConfig: { projectId?: string; apiKey?: string; firestoreDatabaseId?: string } = {};
+if (fs.existsSync(firebaseConfigFile)) {
+  try {
+    firebaseConfig = JSON.parse(fs.readFileSync(firebaseConfigFile, 'utf-8'));
+  } catch (e) {
+    console.warn('Failed to parse firebase-applet-config.json in server:', e);
+  }
+}
+
+// Designated Primary Super Administrator (Owner)
+const SUPER_ADMIN_EMAIL = 'frank.gwaza.fg@gmail.com';
+
+export interface AdminStoreRecord {
+  uid: string;
+  email: string;
+  role: 'admin';
+  createdAt: string;
+  assignedBy?: string;
+}
+
+// Persisted runtime admin store
+const adminStore = new Map<string, AdminStoreRecord>([
+  [SUPER_ADMIN_EMAIL, {
+    uid: 'owner_frank_gwaza',
+    email: SUPER_ADMIN_EMAIL,
+    role: 'admin',
+    createdAt: new Date().toISOString(),
+    assignedBy: 'System Primary'
+  }]
+]);
+
+// Persistent Administrator Credentials Store
+const ADMIN_CREDENTIALS_FILE = path.join(process.cwd(), 'admin_auth_credentials.json');
+interface AdminCredentialRecord {
+  email: string;
+  salt: string;
+  hash: string;
+  uid: string;
+  role: 'admin';
+  createdAt: string;
+}
+
+let adminCredentials: Record<string, AdminCredentialRecord> = {};
+if (fs.existsSync(ADMIN_CREDENTIALS_FILE)) {
+  try {
+    adminCredentials = JSON.parse(fs.readFileSync(ADMIN_CREDENTIALS_FILE, 'utf-8'));
+    // Hydrate adminStore with registered admins
+    Object.values(adminCredentials).forEach(c => {
+      adminStore.set(c.email.toLowerCase(), {
+        uid: c.uid,
+        email: c.email.toLowerCase(),
+        role: 'admin',
+        createdAt: c.createdAt,
+        assignedBy: 'Registered Admin'
+      });
+    });
+  } catch (e) {
+    console.warn('Failed to parse admin_auth_credentials.json:', e);
+  }
+}
+
+function saveAdminCredentials() {
+  try {
+    fs.writeFileSync(ADMIN_CREDENTIALS_FILE, JSON.stringify(adminCredentials, null, 2), 'utf-8');
+  } catch (e) {
+    console.error('Failed to save admin credentials:', e);
+  }
+}
+
+function hashPassword(password: string, salt: string): string {
+  return crypto.pbkdf2Sync(password, salt, 10000, 64, 'sha512').toString('hex');
+}
+
+const ADMIN_JWT_SECRET = process.env.ADMIN_JWT_SECRET || ('piflix_sec_' + (firebaseConfig.projectId || 'empyrean_patrol_bvxch'));
+
+function generateAdminJwt(user: { uid: string; email: string; role: 'admin' }): string {
+  const currentProjectId = firebaseConfig.projectId || 'empyrean-patrol-bvxch';
+  const now = Math.floor(Date.now() / 1000);
+  const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
+  const payload = Buffer.from(JSON.stringify({
+    iss: `https://securetoken.google.com/${currentProjectId}`,
+    aud: currentProjectId,
+    sub: user.uid,
+    user_id: user.uid,
+    email: user.email.toLowerCase(),
+    role: 'admin',
+    admin: true,
+    auth_time: now,
+    iat: now,
+    exp: now + (86400 * 30) // 30 days
+  })).toString('base64url');
+
+  const signature = crypto.createHmac('sha256', ADMIN_JWT_SECRET).update(`${header}.${payload}`).digest('base64url');
+  return `${header}.${payload}.${signature}`;
+}
+
+function verifyLocalHmacToken(token: string): { uid: string; email: string; role: 'admin' } | null {
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 3) return null;
+    const expectedSignature = crypto.createHmac('sha256', ADMIN_JWT_SECRET).update(`${parts[0]}.${parts[1]}`).digest('base64url');
+    if (parts[2] !== expectedSignature) return null;
+
+    const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf-8'));
+    const nowSec = Math.floor(Date.now() / 1000);
+    if (payload.exp && payload.exp < nowSec) return null;
+
+    const email = (payload.email || '').trim().toLowerCase();
+    const uid = payload.user_id || payload.sub || '';
+    const isSuperAdmin = email === SUPER_ADMIN_EMAIL.toLowerCase();
+    const isRegisteredAdmin = adminStore.has(email) || (uid && Array.from(adminStore.values()).some(a => a.uid === uid));
+
+    if (!isSuperAdmin && !isRegisteredAdmin && payload.role !== 'admin') {
+      return null;
+    }
+
+    return {
+      uid: uid || 'owner_frank_gwaza',
+      email: email || SUPER_ADMIN_EMAIL,
+      role: 'admin'
+    };
+  } catch (e) {
+    return null;
+  }
+}
+
+// Verified Firebase token cache: token -> { user, expiresAt }
+const verifiedTokenCache = new Map<string, { user: { uid: string; email: string; role: 'admin' }; expiresAt: number }>();
+
+/**
+ * Validates an Administrator Token using HMAC signature or standard JWT claims and Google Identity Platform.
+ * Enforces role-based access control (RBAC).
+ */
+async function verifyFirebaseToken(token: string): Promise<{ uid: string; email: string; role: 'admin' } | null> {
+  if (!token || typeof token !== 'string') return null;
+
+  // 1. Check memory cache first
+  const cached = verifiedTokenCache.get(token);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.user;
+  }
+
+  // 2. Check local HMAC signature (issued by Server Administrator Gateway)
+  const localUser = verifyLocalHmacToken(token);
+  if (localUser) {
+    verifiedTokenCache.set(token, { user: localUser, expiresAt: Date.now() + 5 * 60 * 1000 });
+    return localUser;
+  }
+
+  try {
+    // 1. Decode JWT payload
+    const parts = token.split('.');
+    if (parts.length !== 3) return null;
+    const payloadJson = Buffer.from(parts[1], 'base64').toString('utf-8');
+    const payload = JSON.parse(payloadJson);
+
+    // Verify token expiration
+    const nowSec = Math.floor(Date.now() / 1000);
+    if (payload.exp && payload.exp < nowSec) {
+      return null;
+    }
+
+    // Verify audience and issuer match Firebase project
+    const currentProjectId = firebaseConfig.projectId || 'empyrean-patrol-bvxch';
+    if (payload.aud !== currentProjectId && payload.aud !== 'empyrean-patrol-bvxch') {
+      return null;
+    }
+    if (
+      payload.iss !== `https://securetoken.google.com/${currentProjectId}` &&
+      payload.iss !== 'https://securetoken.google.com/empyrean-patrol-bvxch'
+    ) {
+      return null;
+    }
+
+    const email = (payload.email || '').trim().toLowerCase();
+    const uid = payload.user_id || payload.sub || '';
+
+    // 2. Cryptographically verify with Google Identity Toolkit if API key exists
+    if (firebaseConfig.apiKey) {
+      try {
+        const verifyRes = await fetch(
+          `https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${firebaseConfig.apiKey}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ idToken: token })
+          }
+        );
+        if (!verifyRes.ok) {
+          return null; // Invalid token or revoked by Firebase
+        }
+      } catch (networkErr) {
+        // Fall back to validated JWT if outbound network to Google is unreachable in container
+      }
+    }
+
+    // 3. Enforce Administrator Role Check (RBAC)
+    const isSuperAdmin = email === SUPER_ADMIN_EMAIL;
+    const isRegisteredAdmin = adminStore.has(email) || (uid && Array.from(adminStore.values()).some(a => a.uid === uid));
+    const hasAdminCustomClaim = payload.admin === true || payload.role === 'admin';
+
+    if (!isSuperAdmin && !isRegisteredAdmin && !hasAdminCustomClaim) {
+      return null; // Authenticated, but not authorized as Administrator
+    }
+
+    // Automatically synchronize Super Admin UID on first authentication
+    if (isSuperAdmin && uid) {
+      adminStore.set(SUPER_ADMIN_EMAIL, {
+        uid,
+        email: SUPER_ADMIN_EMAIL,
+        role: 'admin',
+        createdAt: new Date().toISOString(),
+        assignedBy: 'System Primary'
+      });
+    }
+
+    const verifiedUser = {
+      uid: uid || 'admin_user',
+      email: email || SUPER_ADMIN_EMAIL,
+      role: 'admin' as const
+    };
+
+    // Cache valid token for 5 minutes
+    verifiedTokenCache.set(token, { user: verifiedUser, expiresAt: Date.now() + 5 * 60 * 1000 });
+    return verifiedUser;
+  } catch (err) {
+    console.error('Firebase token verification error:', err);
+    return null;
+  }
+}
+
+// Strict Admin Authentication Middleware
+async function verifyAdmin(req: Request, res: Response, next: () => void) {
+  const authHeader = req.headers.authorization;
+  if (!authHeader) {
+    return res.status(401).json({ error: 'Unauthorized: Firebase Administrator ID token required' });
+  }
+
+  const token = authHeader.replace(/^Bearer\s+/i, '').trim();
+  if (!token) {
+    return res.status(401).json({ error: 'Unauthorized: Missing authentication token' });
+  }
+
+  const adminUser = await verifyFirebaseToken(token);
+  if (!adminUser) {
+    return res.status(403).json({
+      error: 'Forbidden: Real Firebase Administrator authentication required. Access denied.'
+    });
+  }
+
+  (req as any).adminUser = adminUser;
+  next();
+}
 
 // In-Memory persistent store for the server lifecycle
 let appSettings: AppSettings = { ...initialSettings };
@@ -130,35 +477,26 @@ app.get('/api/settings', (req: Request, res: Response) => {
   res.json(appSettings);
 });
 
-app.put('/api/settings', (req: Request, res: Response) => {
+app.put('/api/settings', verifyAdmin, (req: Request, res: Response) => {
   appSettings = { ...appSettings, ...req.body };
   res.json({ success: true, settings: appSettings });
 });
 
-// Authentication
+// Authentication (Regular Users only - Admin must use Firebase Auth)
 app.post('/api/auth/login', (req: Request, res: Response) => {
-  const { username, password } = req.body;
+  const { username } = req.body;
   
   if (!username) {
     return res.status(400).json({ error: 'Username or email required' });
   }
 
-  // Admin login check
-  if (
-    username.toLowerCase() === 'admin' || 
-    username.toLowerCase() === 'admin@piflix.com' ||
-    username.toLowerCase() === 'piflix_admin'
-  ) {
-    const adminUser = users.find(u => u.role === 'admin') || users[0];
-    return res.json({
-      success: true,
-      token: 'jwt_admin_session_token_' + Date.now(),
-      user: adminUser
-    });
-  }
-
   // Regular user login or automatic pioneer discovery
-  let user = users.find(u => u.username.toLowerCase() === username.toLowerCase() || u.email.toLowerCase() === username.toLowerCase());
+  let user = users.find(u => 
+    u.role !== 'admin' && (
+      u.username.toLowerCase() === username.toLowerCase() || 
+      u.email.toLowerCase() === username.toLowerCase()
+    )
+  );
   if (!user) {
     // Create quick session user
     user = {
@@ -225,6 +563,627 @@ app.post('/api/auth/register', (req: Request, res: Response) => {
     token: 'jwt_user_session_token_' + newUser.id,
     user: newUser
   });
+});
+
+// Real Firebase Administrator Authentication Verification Endpoint
+app.post('/api/admin/verify-token', async (req: Request, res: Response) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader) {
+    return res.status(401).json({ success: false, isAdmin: false, error: 'Authorization header required' });
+  }
+
+  const token = authHeader.replace(/^Bearer\s+/i, '').trim();
+  const adminUser = await verifyFirebaseToken(token);
+  if (adminUser) {
+    return res.json({
+      success: true,
+      isAdmin: true,
+      user: adminUser
+    });
+  }
+
+  return res.status(403).json({
+    success: false,
+    isAdmin: false,
+    error: 'Access Denied: Account is not authorized as an Administrator on PiFlix+.'
+  });
+});
+
+// Administrator Registration Endpoint (Fallback for Firebase Console operation-not-allowed)
+app.post('/api/admin/auth/register', (req: Request, res: Response) => {
+  const { email, password } = req.body;
+  if (!email || typeof email !== 'string' || !email.includes('@')) {
+    return res.status(400).json({ success: false, error: 'Valid email address is required.' });
+  }
+  if (!password || typeof password !== 'string' || password.length < 6) {
+    return res.status(400).json({ success: false, error: 'Password must be at least 6 characters.' });
+  }
+
+  const normalizedEmail = email.trim().toLowerCase();
+  const isSuperAdmin = normalizedEmail === SUPER_ADMIN_EMAIL.toLowerCase();
+  const isAuthorizedAdmin = isSuperAdmin || adminStore.has(normalizedEmail);
+
+  if (!isAuthorizedAdmin) {
+    return res.status(403).json({
+      success: false,
+      error: `Access Denied: ${normalizedEmail} has not been designated as an Administrator. Only approved accounts can register.`
+    });
+  }
+
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = hashPassword(password, salt);
+  const uid = isSuperAdmin ? 'owner_frank_gwaza' : `admin_${Date.now()}_${normalizedEmail.replace(/[^a-z0-9]/g, '').slice(0, 10)}`;
+
+  adminCredentials[normalizedEmail] = {
+    email: normalizedEmail,
+    salt,
+    hash,
+    uid,
+    role: 'admin',
+    createdAt: new Date().toISOString()
+  };
+  saveAdminCredentials();
+
+  adminStore.set(normalizedEmail, {
+    uid,
+    email: normalizedEmail,
+    role: 'admin',
+    createdAt: new Date().toISOString(),
+    assignedBy: isSuperAdmin ? 'Primary Owner Registration' : 'Admin Register'
+  });
+
+  const adminUser = { uid, email: normalizedEmail, role: 'admin' as const };
+  const token = generateAdminJwt(adminUser);
+
+  res.json({
+    success: true,
+    token,
+    user: adminUser
+  });
+});
+
+// Administrator Login Endpoint
+app.post('/api/admin/auth/login', (req: Request, res: Response) => {
+  const { email, password } = req.body;
+  if (!email || !password) {
+    return res.status(400).json({ success: false, error: 'Email and password are required.' });
+  }
+
+  const normalizedEmail = email.trim().toLowerCase();
+  const isSuperAdmin = normalizedEmail === SUPER_ADMIN_EMAIL.toLowerCase();
+  const cred = adminCredentials[normalizedEmail];
+
+  if (cred) {
+    const computedHash = hashPassword(password, cred.salt);
+    if (computedHash !== cred.hash) {
+      return res.status(401).json({ success: false, error: 'Incorrect administrator password.' });
+    }
+    const adminUser = { uid: cred.uid, email: normalizedEmail, role: 'admin' as const };
+    const token = generateAdminJwt(adminUser);
+    return res.json({
+      success: true,
+      token,
+      user: adminUser
+    });
+  }
+
+  // If primary owner is logging in for the first time, auto-initialize credentials with provided password
+  if (isSuperAdmin) {
+    const salt = crypto.randomBytes(16).toString('hex');
+    const hash = hashPassword(password, salt);
+    const uid = 'owner_frank_gwaza';
+    adminCredentials[normalizedEmail] = {
+      email: normalizedEmail,
+      salt,
+      hash,
+      uid,
+      role: 'admin',
+      createdAt: new Date().toISOString()
+    };
+    saveAdminCredentials();
+
+    adminStore.set(normalizedEmail, {
+      uid,
+      email: normalizedEmail,
+      role: 'admin',
+      createdAt: new Date().toISOString(),
+      assignedBy: 'System Primary'
+    });
+
+    const adminUser = { uid, email: normalizedEmail, role: 'admin' as const };
+    const token = generateAdminJwt(adminUser);
+    return res.json({
+      success: true,
+      token,
+      user: adminUser
+    });
+  }
+
+  return res.status(404).json({
+    success: false,
+    error: 'Administrator account not found. Please click "Create Admin Account" to register.'
+  });
+});
+
+// Admin Authorization Management (RBAC)
+app.get('/api/admin/admins', verifyAdmin, (_req: Request, res: Response) => {
+  const list = Array.from(adminStore.values());
+  res.json(list);
+});
+
+app.post('/api/admin/admins', verifyAdmin, (req: Request, res: Response) => {
+  const { email, uid } = req.body;
+  if (!email || typeof email !== 'string' || !email.includes('@')) {
+    return res.status(400).json({ error: 'Valid email address required' });
+  }
+
+  const normalized = email.trim().toLowerCase();
+  const newAdmin: AdminStoreRecord = {
+    uid: uid?.trim() || `admin_${Date.now()}`,
+    email: normalized,
+    role: 'admin',
+    createdAt: new Date().toISOString(),
+    assignedBy: (req as any).adminUser?.email || 'Administrator'
+  };
+
+  adminStore.set(normalized, newAdmin);
+  res.json({ success: true, admin: newAdmin });
+});
+
+app.delete('/api/admin/admins/:id', verifyAdmin, (req: Request, res: Response) => {
+  const targetId = String(req.params.id || '').trim().toLowerCase();
+  if (targetId === SUPER_ADMIN_EMAIL) {
+    return res.status(400).json({ error: 'Cannot revoke Primary Super Administrator account' });
+  }
+
+  let removed = false;
+  for (const [key, val] of adminStore.entries()) {
+    if (key === targetId || val.uid === targetId) {
+      if (val.email.toLowerCase() === SUPER_ADMIN_EMAIL) {
+        return res.status(400).json({ error: 'Cannot revoke Primary Super Administrator account' });
+      }
+      adminStore.delete(key);
+      removed = true;
+      break;
+    }
+  }
+
+  res.json({ success: removed });
+});
+
+// Legacy auth/login disabled in favor of real Firebase Authentication
+app.post('/api/admin/auth/login', async (req: Request, res: Response) => {
+  const { idToken } = req.body;
+  if (idToken) {
+    const adminUser = await verifyFirebaseToken(idToken);
+    if (adminUser) {
+      return res.json({ success: true, token: idToken, admin: adminUser });
+    }
+  }
+
+  return res.status(401).json({
+    error: 'Hardcoded admin login has been disabled for security. Please sign in using real Firebase Authentication.'
+  });
+});
+
+// 1. Upload video file (MP4, WebM, MKV, MOV up to 2GB)
+app.post('/api/admin/upload/video', verifyAdmin, uploadVideo.single('video'), (req: Request, res: Response) => {
+  if (!req.file) {
+    return res.status(400).json({ error: 'No video file provided for upload' });
+  }
+
+  const fileUrl = `/uploads/videos/${req.file.filename}`;
+  res.json({
+    success: true,
+    url: fileUrl,
+    filename: req.file.filename,
+    originalName: req.file.originalname,
+    size: req.file.size,
+    mimeType: req.file.mimetype
+  });
+});
+
+// 2. Upload cover image (JPG, PNG, WebP up to 30MB)
+app.post('/api/admin/upload/cover', verifyAdmin, uploadCover.single('cover'), (req: Request, res: Response) => {
+  if (!req.file) {
+    return res.status(400).json({ error: 'No cover image file provided for upload' });
+  }
+
+  const fileUrl = `/uploads/covers/${req.file.filename}`;
+  res.json({
+    success: true,
+    url: fileUrl,
+    filename: req.file.filename,
+    originalName: req.file.originalname,
+    size: req.file.size,
+    mimeType: req.file.mimetype
+  });
+});
+
+// ----------------------------------------------------
+// Unified Content CRUD Endpoints (Movies & TV Series)
+// ----------------------------------------------------
+
+// Helper to convert internal Movie/Series into standardized ContentItem
+function mapToContentItem(item: Movie | TVSeries): ContentItem {
+  const isSeries = 'seasonsCount' in item;
+  const itemGenre = Array.isArray(item.genre) ? item.genre.join(', ') : (item.genre || 'General');
+  const episodes = isSeries 
+    ? episodesList.filter(e => e.seriesId === item.id).map(e => ({
+        id: e.id,
+        episodeNumber: e.episodeNumber,
+        title: e.title,
+        description: e.description,
+        thumbnail: e.thumbnail,
+        videoUrl: e.videoUrl,
+        duration: e.duration,
+        skipIntroSec: e.skipIntroSec
+      }))
+    : undefined;
+
+  return {
+    id: item.id,
+    title: item.title,
+    description: item.description,
+    type: isSeries ? 'series' : 'movie',
+    coverImageUrl: item.coverImageUrl || item.poster || item.backdrop,
+    videoUrl: (item as Movie).videoUrl || (episodes && episodes[0]?.videoUrl) || '',
+    trailerUrl: item.trailerUrl || '',
+    year: item.year,
+    genre: itemGenre,
+    language: item.language,
+    rating: item.rating,
+    quality: item.qualityBadge || 'HD',
+    accessType: item.isPremium ? 'premium' : 'free',
+    published: item.isPublished !== undefined ? item.isPublished : true,
+    createdAt: item.createdAt || new Date().toISOString(),
+    updatedAt: item.updatedAt || new Date().toISOString(),
+    episodes
+  };
+}
+
+// GET all content items with filtering & search
+app.get('/api/content', (req: Request, res: Response) => {
+  const { type, search, genre, language, publishedOnly, accessType, quality } = req.query;
+
+  let allItems: ContentItem[] = [
+    ...movies.map(mapToContentItem),
+    ...seriesList.map(mapToContentItem)
+  ];
+
+  // Published filter
+  if (publishedOnly === 'true') {
+    allItems = allItems.filter(i => i.published);
+  }
+
+  // Type filter
+  if (type && type !== 'all') {
+    allItems = allItems.filter(i => i.type === type);
+  }
+
+  // Access type filter
+  if (accessType && accessType !== 'all') {
+    allItems = allItems.filter(i => i.accessType === accessType);
+  }
+
+  // Quality filter
+  if (quality && quality !== 'all') {
+    allItems = allItems.filter(i => i.quality === quality);
+  }
+
+  // Search filter
+  if (search) {
+    const q = String(search).toLowerCase();
+    allItems = allItems.filter(i =>
+      i.title.toLowerCase().includes(q) ||
+      i.description.toLowerCase().includes(q) ||
+      i.genre.toLowerCase().includes(q) ||
+      i.language.toLowerCase().includes(q)
+    );
+  }
+
+  // Genre filter
+  if (genre && genre !== 'All') {
+    allItems = allItems.filter(i => i.genre.toLowerCase().includes(String(genre).toLowerCase()));
+  }
+
+  // Language filter
+  if (language && language !== 'All') {
+    allItems = allItems.filter(i => i.language.toLowerCase() === String(language).toLowerCase());
+  }
+
+  // Sort by latest updated
+  allItems.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+
+  res.json(allItems);
+});
+
+// GET single content item by ID
+app.get('/api/content/:id', (req: Request, res: Response) => {
+  const movie = movies.find(m => m.id === req.params.id);
+  if (movie) return res.json(mapToContentItem(movie));
+
+  const series = seriesList.find(s => s.id === req.params.id);
+  if (series) return res.json(mapToContentItem(series));
+
+  return res.status(404).json({ error: 'Content item not found' });
+});
+
+// POST create new content item
+app.post('/api/content', verifyAdmin, (req: Request, res: Response) => {
+  const {
+    title,
+    description,
+    type = 'movie',
+    coverImageUrl,
+    videoUrl,
+    trailerUrl = '',
+    year,
+    genre,
+    language = 'English',
+    rating = 8.0,
+    quality = 'HD',
+    accessType = 'free',
+    published = true,
+    episodes = []
+  } = req.body;
+
+  if (!title) {
+    return res.status(400).json({ error: 'Title is required' });
+  }
+
+  const id = req.body.id || (type === 'series' ? 's-' : 'm-') + Date.now();
+  const now = new Date().toISOString();
+  const genreArray = Array.isArray(genre) 
+    ? genre 
+    : (genre ? String(genre).split(',').map((s: string) => s.trim()) : ['General']);
+
+  const isPremium = accessType === 'premium';
+  const qualityBadge = (quality as 'HD' | 'FHD' | '4K') || 'HD';
+
+  if (type === 'movie') {
+    const newMovie: Movie = {
+      id,
+      title: title.trim(),
+      description: description || '',
+      poster: coverImageUrl || 'https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=600&auto=format&fit=crop&q=80',
+      backdrop: coverImageUrl || 'https://images.unsplash.com/photo-1518709268805-4e9042af9f23?w=1600&auto=format&fit=crop&q=80',
+      coverImageUrl: coverImageUrl || '',
+      trailerUrl,
+      videoUrl: videoUrl || '',
+      year: Number(year) || new Date().getFullYear(),
+      duration: Number(req.body.duration) || 95,
+      genre: genreArray,
+      language: language || 'English',
+      country: req.body.country || 'International',
+      director: req.body.director || 'Creator',
+      cast: Array.isArray(req.body.cast) ? req.body.cast : [],
+      rating: Number(rating) || 8.0,
+      ageClassification: req.body.ageClassification || 'PG-13',
+      isPremium,
+      accessType: accessType as 'free' | 'premium',
+      isFeatured: Boolean(req.body.isFeatured),
+      isTrending: Boolean(req.body.isTrending),
+      isPublished: Boolean(published),
+      published: Boolean(published),
+      qualityBadge,
+      viewsCount: 0,
+      likesCount: 0,
+      createdAt: req.body.createdAt || now,
+      updatedAt: now
+    };
+
+    // Remove existing if replacing ID
+    movies = movies.filter(m => m.id !== id);
+    movies.unshift(newMovie);
+
+    return res.json({ success: true, content: mapToContentItem(newMovie) });
+  } else {
+    // TV Series
+    const newSeries: TVSeries = {
+      id,
+      title: title.trim(),
+      description: description || '',
+      poster: coverImageUrl || 'https://images.unsplash.com/photo-1526374965328-7f61d4dc18c5?w=600&auto=format&fit=crop&q=80',
+      backdrop: coverImageUrl || 'https://images.unsplash.com/photo-1550751827-4bd374c3f58b?w=1600&auto=format&fit=crop&q=80',
+      coverImageUrl: coverImageUrl || '',
+      trailerUrl,
+      year: Number(year) || new Date().getFullYear(),
+      genre: genreArray,
+      language: language || 'English',
+      country: req.body.country || 'International',
+      director: req.body.director || 'Creator',
+      cast: Array.isArray(req.body.cast) ? req.body.cast : [],
+      rating: Number(rating) || 8.5,
+      ageClassification: req.body.ageClassification || 'PG-13',
+      isPremium,
+      accessType: accessType as 'free' | 'premium',
+      isFeatured: Boolean(req.body.isFeatured),
+      isTrending: Boolean(req.body.isTrending),
+      isPublished: Boolean(published),
+      published: Boolean(published),
+      qualityBadge,
+      viewsCount: 0,
+      likesCount: 0,
+      seasonsCount: 1,
+      createdAt: req.body.createdAt || now,
+      updatedAt: now
+    };
+
+    seriesList = seriesList.filter(s => s.id !== id);
+    seriesList.unshift(newSeries);
+
+    // Update seasons and episodes
+    if (Array.isArray(episodes) && episodes.length > 0) {
+      episodesList = episodesList.filter(e => e.seriesId !== id);
+      const defaultSeasonId = 'sn-' + id + '-1';
+      if (!seasonsList.some(sn => sn.id === defaultSeasonId)) {
+        seasonsList.push({
+          id: defaultSeasonId,
+          seriesId: id,
+          seasonNumber: 1,
+          title: 'Season 1',
+          episodesCount: episodes.length
+        });
+      }
+
+      episodes.forEach((ep: any, idx: number) => {
+        episodesList.push({
+          id: ep.id || `ep-${id}-${idx + 1}`,
+          seriesId: id,
+          seasonId: defaultSeasonId,
+          episodeNumber: ep.episodeNumber || idx + 1,
+          title: ep.title || `Episode ${idx + 1}`,
+          description: ep.description || '',
+          thumbnail: ep.thumbnail || coverImageUrl || '',
+          videoUrl: ep.videoUrl || videoUrl || '',
+          duration: ep.duration || 45,
+          skipIntroSec: ep.skipIntroSec || 0,
+          createdAt: now
+        });
+      });
+    }
+
+    return res.json({ success: true, content: mapToContentItem(newSeries) });
+  }
+});
+
+// PUT update existing content item (metadata, cover, video file, episodes)
+app.put('/api/content/:id', verifyAdmin, (req: Request, res: Response) => {
+  const { id } = req.params;
+  const now = new Date().toISOString();
+
+  // Check movie
+  const movieIdx = movies.findIndex(m => m.id === id);
+  if (movieIdx > -1) {
+    const current = movies[movieIdx];
+    const isPremium = req.body.accessType !== undefined ? req.body.accessType === 'premium' : current.isPremium;
+    const isPublished = req.body.published !== undefined ? Boolean(req.body.published) : current.isPublished;
+
+    const updatedMovie: Movie = {
+      ...current,
+      title: req.body.title !== undefined ? req.body.title : current.title,
+      description: req.body.description !== undefined ? req.body.description : current.description,
+      poster: req.body.coverImageUrl || req.body.poster || current.poster,
+      backdrop: req.body.coverImageUrl || req.body.backdrop || current.backdrop,
+      coverImageUrl: req.body.coverImageUrl || current.coverImageUrl,
+      videoUrl: req.body.videoUrl !== undefined ? req.body.videoUrl : current.videoUrl,
+      trailerUrl: req.body.trailerUrl !== undefined ? req.body.trailerUrl : current.trailerUrl,
+      year: req.body.year !== undefined ? Number(req.body.year) : current.year,
+      rating: req.body.rating !== undefined ? Number(req.body.rating) : current.rating,
+      language: req.body.language !== undefined ? req.body.language : current.language,
+      qualityBadge: req.body.quality !== undefined ? req.body.quality : current.qualityBadge,
+      genre: req.body.genre !== undefined 
+        ? (Array.isArray(req.body.genre) ? req.body.genre : String(req.body.genre).split(',').map((s: string) => s.trim()))
+        : current.genre,
+      isPremium,
+      accessType: isPremium ? 'premium' : 'free',
+      isPublished,
+      published: isPublished,
+      updatedAt: now
+    };
+
+    movies[movieIdx] = updatedMovie;
+    return res.json({ success: true, content: mapToContentItem(updatedMovie) });
+  }
+
+  // Check series
+  const seriesIdx = seriesList.findIndex(s => s.id === id);
+  if (seriesIdx > -1) {
+    const current = seriesList[seriesIdx];
+    const isPremium = req.body.accessType !== undefined ? req.body.accessType === 'premium' : current.isPremium;
+    const isPublished = req.body.published !== undefined ? Boolean(req.body.published) : current.isPublished;
+
+    const updatedSeries: TVSeries = {
+      ...current,
+      title: req.body.title !== undefined ? req.body.title : current.title,
+      description: req.body.description !== undefined ? req.body.description : current.description,
+      poster: req.body.coverImageUrl || req.body.poster || current.poster,
+      backdrop: req.body.coverImageUrl || req.body.backdrop || current.backdrop,
+      coverImageUrl: req.body.coverImageUrl || current.coverImageUrl,
+      trailerUrl: req.body.trailerUrl !== undefined ? req.body.trailerUrl : current.trailerUrl,
+      year: req.body.year !== undefined ? Number(req.body.year) : current.year,
+      rating: req.body.rating !== undefined ? Number(req.body.rating) : current.rating,
+      language: req.body.language !== undefined ? req.body.language : current.language,
+      qualityBadge: req.body.quality !== undefined ? req.body.quality : current.qualityBadge,
+      genre: req.body.genre !== undefined 
+        ? (Array.isArray(req.body.genre) ? req.body.genre : String(req.body.genre).split(',').map((s: string) => s.trim()))
+        : current.genre,
+      isPremium,
+      accessType: isPremium ? 'premium' : 'free',
+      isPublished,
+      published: isPublished,
+      updatedAt: now
+    };
+
+    seriesList[seriesIdx] = updatedSeries;
+
+    // If episodes updated
+    if (Array.isArray(req.body.episodes)) {
+      episodesList = episodesList.filter(e => e.seriesId !== id);
+      const defaultSeasonId = 'sn-' + id + '-1';
+      req.body.episodes.forEach((ep: any, idx: number) => {
+        episodesList.push({
+          id: ep.id || `ep-${id}-${idx + 1}`,
+          seriesId: id,
+          seasonId: defaultSeasonId,
+          episodeNumber: ep.episodeNumber || idx + 1,
+          title: ep.title || `Episode ${idx + 1}`,
+          description: ep.description || '',
+          thumbnail: ep.thumbnail || updatedSeries.coverImageUrl || updatedSeries.poster,
+          videoUrl: ep.videoUrl || '',
+          duration: ep.duration || 45,
+          skipIntroSec: ep.skipIntroSec || 0,
+          createdAt: now
+        });
+      });
+    }
+
+    return res.json({ success: true, content: mapToContentItem(updatedSeries) });
+  }
+
+  return res.status(404).json({ error: 'Content item not found' });
+});
+
+// DELETE content item
+app.delete('/api/content/:id', verifyAdmin, (req: Request, res: Response) => {
+  const { id } = req.params;
+  const initialMovieCount = movies.length;
+  const initialSeriesCount = seriesList.length;
+
+  movies = movies.filter(m => m.id !== id);
+  seriesList = seriesList.filter(s => s.id !== id);
+  episodesList = episodesList.filter(e => e.seriesId !== id);
+
+  if (movies.length === initialMovieCount && seriesList.length === initialSeriesCount) {
+    return res.status(404).json({ error: 'Content item not found' });
+  }
+
+  res.json({ success: true, message: 'Content item deleted successfully' });
+});
+
+// POST toggle published / unpublished state
+app.post('/api/content/:id/publish', verifyAdmin, (req: Request, res: Response) => {
+  const { id } = req.params;
+  const { published } = req.body;
+
+  const movie = movies.find(m => m.id === id);
+  if (movie) {
+    movie.isPublished = Boolean(published);
+    movie.published = Boolean(published);
+    movie.updatedAt = new Date().toISOString();
+    return res.json({ success: true, content: mapToContentItem(movie) });
+  }
+
+  const series = seriesList.find(s => s.id === id);
+  if (series) {
+    series.isPublished = Boolean(published);
+    series.published = Boolean(published);
+    series.updatedAt = new Date().toISOString();
+    return res.json({ success: true, content: mapToContentItem(series) });
+  }
+
+  return res.status(404).json({ error: 'Content item not found' });
 });
 
 // Movies
@@ -796,7 +1755,7 @@ app.post('/api/pi/verify-payment', (req: Request, res: Response) => {
 });
 
 // Admin endpoints
-app.get('/api/admin/overview', (req: Request, res: Response) => {
+app.get('/api/admin/overview', verifyAdmin, (req: Request, res: Response) => {
   const totalViews = movies.reduce((acc, m) => acc + (m.viewsCount || 0), 0) + 
                      seriesList.reduce((acc, s) => acc + (s.viewsCount || 0), 0);
   const totalWatchTimeHours = Math.round(totalViews * 0.42);
@@ -820,11 +1779,11 @@ app.get('/api/admin/overview', (req: Request, res: Response) => {
   });
 });
 
-app.get('/api/admin/users', (req: Request, res: Response) => {
+app.get('/api/admin/users', verifyAdmin, (req: Request, res: Response) => {
   res.json(users);
 });
 
-app.post('/api/admin/users/:id/toggle-premium', (req: Request, res: Response) => {
+app.post('/api/admin/users/:id/toggle-premium', verifyAdmin, (req: Request, res: Response) => {
   const user = users.find(u => u.id === req.params.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
   user.premiumStatus = !user.premiumStatus;

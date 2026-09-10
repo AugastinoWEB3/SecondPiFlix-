@@ -4,7 +4,8 @@ import { useApp } from '../context/AppContext';
 import { Movie, TVSeries } from '../types';
 
 export const HeroBanner: React.FC = () => {
-  const { movies, seriesList, playVideo, openDetails, toggleWatchlist, isInWatchlist, settings } = useApp();
+  const { movies, seriesList, playVideo, openDetails, toggleWatchlist, isInWatchlist, settings, theme } = useApp();
+  const isDark = theme === 'dark';
 
   // Combine featured movies and series
   const featuredItems: (Movie | TVSeries)[] = [
@@ -46,7 +47,7 @@ export const HeroBanner: React.FC = () => {
     <div
       onMouseEnter={() => setIsPaused(true)}
       onMouseLeave={() => setIsPaused(false)}
-      className="relative w-full h-[68vh] min-h-[460px] max-h-[720px] overflow-hidden select-none bg-[#0c0d14]"
+      className={`relative w-full h-[68vh] min-h-[460px] max-h-[720px] overflow-hidden select-none ${isDark ? 'bg-[#0a0b12]' : 'bg-slate-900'}`}
     >
       {/* Background Backdrop with Pan Zoom Animation */}
       <div className="absolute inset-0">
@@ -58,9 +59,9 @@ export const HeroBanner: React.FC = () => {
         />
 
         {/* Multi-stage cinematic gradient overlays */}
-        <div className="absolute inset-0 bg-gradient-to-t from-[#0c0d14] via-[#0c0d14]/60 to-transparent" />
-        <div className="absolute inset-0 bg-gradient-to-r from-[#0c0d14] via-[#0c0d14]/70 to-transparent w-full md:w-3/4" />
-        <div className="absolute inset-0 bg-gradient-to-b from-[#0c0d14]/40 via-transparent to-[#0c0d14]" />
+        <div className={`absolute inset-0 bg-gradient-to-t ${isDark ? 'from-[#0a0b12] via-[#0a0b12]/60' : 'from-[#f8fafc] via-slate-950/40'} to-transparent`} />
+        <div className="absolute inset-0 bg-gradient-to-r from-black/90 via-black/50 to-transparent w-full md:w-3/4" />
+        <div className={`absolute inset-0 bg-gradient-to-b ${isDark ? 'from-[#0a0b12]/40' : 'from-black/40'} via-transparent ${isDark ? 'to-[#0a0b12]' : 'to-[#f8fafc]'}`} />
       </div>
 
       {/* Hero Content Container */}
