@@ -5,6 +5,8 @@ import { subscribeToContent } from '../lib/firebaseContent';
 import { auth } from '../lib/firebase';
 import { onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
 import { loginAdminWithEmail, loginAdminWithGoogle, registerAdminAccount, logoutAdminUser, verifyTokenWithBackend } from '../lib/firebaseAuth';
+import { authenticateWithPi } from '../lib/piAuth';
+import { getDeterministicEmoji } from '../lib/avatar';
 
 interface AppContextType {
   // Theme
@@ -27,6 +29,12 @@ interface AppContextType {
   adminRegister: (email: string, password: string) => Promise<{ success: boolean; error?: string }>;
   adminLogout: () => void;
   firebaseAdminUser: FirebaseUser | null;
+
+  // Pi Network Auth
+  isPiAuthenticating: boolean;
+  piAuthError: string | null;
+  clearPiAuthError: () => void;
+  signInWithPi: (silent?: boolean) => Promise<{ success: boolean; error?: string; user?: User }>;
 
   // Content Data
   movies: Movie[];
@@ -91,7 +99,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [settings, setSettings] = useState<AppSettings>(initialSettings);
   const [currentUser, setCurrentUser] = useState<User>(() => {
     const saved = localStorage.getItem('piflix_current_user');
-    return saved ? JSON.parse(saved) : defaultUsers[1]; // default to demo user
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (parsed?.profileImage && (parsed.profileImage.includes('dicebear') || parsed.profileImage.includes('bottts'))) {
+          parsed.profileImage = getDeterministicEmoji(parsed.piUsername || parsed.username);
+          localStorage.setItem('piflix_current_user', JSON.stringify(parsed));
+        }
+        return parsed;
+      } catch (e) {
+        console.warn('Failed to parse cached user:', e);
+      }
+    }
+    return defaultUsers[1]; // default to demo user
   });
 
   const [movies, setMovies] = useState<Movie[]>([]);
@@ -119,6 +139,44 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [adminToken, setAdminToken] = useState<string | null>(null);
   const [isAdmin, setIsAdmin] = useState<boolean>(false);
   const [firebaseAdminUser, setFirebaseAdminUser] = useState<FirebaseUser | null>(null);
+
+  // Pi Network authentication states
+  const [isPiAuthenticating, setIsPiAuthenticating] = useState<boolean>(false);
+  const [piAuthError, setPiAuthError] = useState<string | null>(null);
+
+  const clearPiAuthError = () => setPiAuthError(null);
+
+  const signInWithPi = async (silent: boolean = false): Promise<{ success: boolean; error?: string; user?: User }> => {
+    setIsPiAuthenticating(true);
+    setPiAuthError(null);
+    try {
+      const result = await authenticateWithPi({ isAuto: silent });
+      if (result.success && result.user) {
+        setCurrentUser(result.user);
+        setIsPiAuthenticating(false);
+        return { success: true, user: result.user };
+      } else {
+        const errMsg = result.error || 'Pi Network authentication failed';
+        if (!silent) {
+          setPiAuthError(errMsg);
+        } else {
+          console.info('[Pi Auth] Auto-authentication check:', errMsg);
+        }
+        setIsPiAuthenticating(false);
+        return { success: false, error: errMsg };
+      }
+    } catch (err: any) {
+      const errMsg = err?.message || 'Unexpected error during Pi authentication';
+      if (!silent) setPiAuthError(errMsg);
+      setIsPiAuthenticating(false);
+      return { success: false, error: errMsg };
+    }
+  };
+
+  // Requirement: Trigger Pi authentication automatically when the app loads
+  useEffect(() => {
+    signInWithPi(true);
+  }, []);
 
   // Real Firebase Auth listener for Admin role verification
   useEffect(() => {
@@ -380,6 +438,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const logout = () => {
+    localStorage.removeItem('piflix_pi_access_token');
+    localStorage.removeItem('piflix_user_token');
     setCurrentUser(defaultUsers[1]); // revert to demo user
     setActiveTab('home');
   };
@@ -567,6 +627,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         adminRegister,
         adminLogout,
         firebaseAdminUser,
+        isPiAuthenticating,
+        piAuthError,
+        clearPiAuthError,
+        signInWithPi,
         movies,
         seriesList,
         refreshContent,

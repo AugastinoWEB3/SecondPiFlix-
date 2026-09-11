@@ -3,6 +3,7 @@ import { Play, Plus, Check, Heart, Share2, X, Star, Clock, Globe, Award, Sparkle
 import { Movie, TVSeries, Season, Episode, ContentRatingReview } from '../types';
 import { useApp } from '../context/AppContext';
 import { MovieCard } from './MovieCard';
+import { UserAvatar } from './UserAvatar';
 
 interface ContentDetailsModalInnerProps {
   content: Movie | TVSeries;
@@ -487,10 +488,11 @@ const ContentDetailsModalInner: React.FC<ContentDetailsModalInnerProps> = ({ con
                   <div key={r.id} className="p-3.5 bg-zinc-900/40 rounded-xl border border-zinc-800/60 space-y-1 text-xs">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
-                        <img
-                          src={r.userImage || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=100&auto=format&fit=crop&q=80'}
-                          alt={r.username}
-                          className="w-5 h-5 rounded-full object-cover"
+                        <UserAvatar
+                          user={{ username: r.username, profileImage: r.userImage }}
+                          sizeClass="w-5 h-5"
+                          textClass="text-[10px]"
+                          isDark={true}
                         />
                         <span className="font-semibold text-white">{r.username}</span>
                       </div>

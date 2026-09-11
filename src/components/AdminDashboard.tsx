@@ -8,6 +8,7 @@ import {
 import { useApp } from '../context/AppContext';
 import { ContentItem, Movie, TVSeries, User } from '../types';
 import { saveContent, deleteContent, setPublishedState } from '../lib/firebaseContent';
+import { UserAvatar } from './UserAvatar';
 
 interface EpisodeFormItem {
   id?: string;
@@ -1222,7 +1223,7 @@ export const AdminDashboard: React.FC = () => {
             {usersList.map(u => (
               <div key={u.id} className="py-3 flex items-center justify-between text-xs">
                 <div className="flex items-center gap-3">
-                  <img src={u.profileImage} alt={u.username} className="w-8 h-8 rounded-full object-cover" />
+                  <UserAvatar user={u} sizeClass="w-8 h-8" textClass="text-lg" isDark={true} />
                   <div>
                     <div className="font-bold text-white">{u.username}</div>
                     <div className="text-[10px] text-zinc-400">{u.email}</div>

@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import confetti from 'canvas-confetti';
 import { X, CheckCircle, ShieldCheck, Sparkles, AlertCircle, ArrowRight, Loader2, Coins } from 'lucide-react';
 import { useApp } from '../context/AppContext';
+import { getPiSDK, initPiSDK, isPiBrowser } from '../lib/piAuth';
 
 const PiPaymentModalInner: React.FC = () => {
   const {
@@ -24,62 +25,117 @@ const PiPaymentModalInner: React.FC = () => {
     setStep('authenticating');
 
     try {
-      // Step 1: Server payment intent creation
-      await new Promise(r => setTimeout(r, 900)); // smooth realistic flow
-      const orderRes = await fetch('/api/pi/create-payment', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      const Pi = await getPiSDK();
+      if (!Pi) {
+        throw new Error('Pi Network SDK is not available. Please open PiFlix+ inside the official Pi Browser.');
+      }
+
+      await initPiSDK();
+
+      // If Pi.createPayment is not available (e.g. running in standard desktop browser outside Pi Browser mobile app)
+      if (typeof Pi.createPayment !== 'function') {
+        throw new Error(
+          'Pi Network payments require the official Pi Browser mobile app. Please open PiFlix+ inside the Pi Browser.'
+        );
+      }
+
+      const paymentData = {
+        amount: currentPrice,
+        memo: `PiFlix+ ${activePlan === 'annual' ? 'Annual VIP' : 'Monthly VIP'} Streaming Access`,
+        metadata: {
+          plan: activePlan,
           userId: currentUser.id,
-          plan: activePlan
-        })
-      });
+          appName: 'PiFlix+'
+        }
+      };
 
-      const orderData = await orderRes.json();
-      if (!orderData.success) {
-        throw new Error(orderData.error || 'Failed to initialize payment');
-      }
+      const callbacks = {
+        // Requirement 3: onReadyForServerApproval sends the paymentId to backend
+        onReadyForServerApproval: async (paymentId: string) => {
+          setStep('approving');
+          try {
+            const approveRes = await fetch('/api/pi/payments/approve', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                paymentId,
+                plan: activePlan,
+                userId: currentUser.id
+              })
+            });
 
-      setStep('approving');
-      await new Promise(r => setTimeout(r, 1200)); // simulating Pi Browser Wallet signing
+            const approveData = await approveRes.json();
+            if (!approveRes.ok || !approveData.success) {
+              throw new Error(approveData.error || 'Server approval failed.');
+            }
+          } catch (err: any) {
+            console.error('[Pi Payment Approval Handler Error]:', err);
+            throw err;
+          }
+        },
 
-      setStep('verifying');
-      // Step 2: Server-side cryptographic blockchain verification
-      const verifyRes = await fetch('/api/pi/verify-payment', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          transactionId: orderData.payment.transactionId,
-          piTxId: `0xPI_${Date.now()}_NODE77`,
-          signedPayload: 'SIG_ED25519_VALIDATED'
-        })
-      });
+        // Requirement 5: onReadyForServerCompletion sends the paymentId and txid to backend
+        onReadyForServerCompletion: async (paymentId: string, txid: string) => {
+          setStep('verifying');
+          try {
+            const completeRes = await fetch('/api/pi/payments/complete', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                paymentId,
+                txid,
+                plan: activePlan,
+                userId: currentUser.id
+              })
+            });
 
-      const verifyData = await verifyRes.json();
-      if (!verifyData.success) {
-        throw new Error(verifyData.error || 'Payment verification failed');
-      }
+            const completeData = await completeRes.json();
+            if (!completeRes.ok || !completeData.success) {
+              throw new Error(completeData.error || 'Server payment verification failed.');
+            }
 
-      setTxDetails({
-        transactionId: orderData.payment.transactionId,
-        piTxId: verifyData.subscription?.transactionId,
-        amount: currentPrice
-      });
+            // Requirement 7: Only after successful completion should the app confirm the purchase and unlock Premium/VIP
+            setTxDetails({
+              transactionId: paymentId,
+              piTxId: txid,
+              amount: currentPrice
+            });
 
-      setStep('success');
-      confetti({
-        particleCount: 100,
-        spread: 70,
-        origin: { y: 0.6 }
-      });
+            setStep('success');
+            confetti({
+              particleCount: 100,
+              spread: 70,
+              origin: { y: 0.6 }
+            });
 
-      // Update state in app context
-      if (verifyData.user) {
-        onPaymentSuccess(verifyData.user);
-      }
+            // Unlock VIP content in AppContext state
+            if (completeData.user) {
+              onPaymentSuccess(completeData.user);
+            }
+          } catch (err: any) {
+            console.error('[Pi Payment Completion Handler Error]:', err);
+            throw err;
+          }
+        },
+
+        onCancel: (paymentId: string) => {
+          console.warn('[Pi Payment] Payment cancelled by user:', paymentId);
+          setErrorMessage('Pi payment was cancelled.');
+          setStep('error');
+        },
+
+        onError: (error: Error, payment?: any) => {
+          console.error('[Pi Payment Error Callback]:', error, payment);
+          setErrorMessage(error?.message || 'Pi payment transaction encountered an error.');
+          setStep('error');
+        }
+      };
+
+      // Requirement 2: Pi.createPayment() starts the payment
+      await Pi.createPayment(paymentData, callbacks);
     } catch (err: any) {
-      console.error(err);
-      setErrorMessage(err.message || 'Payment transaction encountered an error');
+      console.error('[Pi Payment Start Error]:', err);
+      setErrorMessage(err?.message || 'Payment transaction encountered an error');
       setStep('error');
     }
   };

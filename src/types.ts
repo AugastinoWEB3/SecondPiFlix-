@@ -196,7 +196,7 @@ export interface PaymentRecord {
   transactionId: string;
   amount: number;
   currency: 'Pi';
-  status: 'pending' | 'completed' | 'failed' | 'cancelled';
+  status: 'pending' | 'approved' | 'completed' | 'failed' | 'cancelled';
   plan: 'monthly' | 'annual';
   piPaymentId?: string;
   createdAt: string;

@@ -1,3 +1,6 @@
+import dotenv from 'dotenv';
+dotenv.config();
+
 import express, { Request, Response } from 'express';
 import path from 'path';
 import fs from 'fs';
@@ -563,6 +566,115 @@ app.post('/api/auth/register', (req: Request, res: Response) => {
     token: 'jwt_user_session_token_' + newUser.id,
     user: newUser
   });
+});
+
+// Deterministic standard Unicode emoji avatar selection
+const EMOJI_AVATARS: string[] = [
+  '😀', '😎', '😊', '🥰', '🤩', '😇', '🥳', '😌', '🤗', '🫡',
+  '🐼', '🦊', '🐯', '🐨', '🐸', '🐵', '🐱', '🐶', '🐰', '🐻'
+];
+
+function getDeterministicEmoji(identifier?: string): string {
+  const cleanId = (identifier || '').toLowerCase().replace(/^@/, '').trim();
+  if (!cleanId) return EMOJI_AVATARS[0];
+  let hash = 0;
+  for (let i = 0; i < cleanId.length; i++) {
+    hash = ((hash << 5) - hash) + cleanId.charCodeAt(i);
+    hash |= 0;
+  }
+  const index = Math.abs(hash) % EMOJI_AVATARS.length;
+  return EMOJI_AVATARS[index];
+}
+
+// Pi Network User Authentication Verification Endpoint
+// Requirement: Validate access token by calling GET https://api.minepi.com/v2/me with Authorization: Bearer <accessToken>
+app.post(['/api/auth/pi', '/api/auth/pi/verify'], async (req: Request, res: Response) => {
+  try {
+    const authHeader = req.headers.authorization;
+    const bodyToken = req.body?.accessToken;
+    const accessToken = (bodyToken || (authHeader ? authHeader.replace(/^Bearer\s+/i, '') : '')).trim();
+
+    if (!accessToken) {
+      return res.status(400).json({ success: false, error: 'Pi Network access token is required.' });
+    }
+
+    // Call GET https://api.minepi.com/v2/me with Authorization: Bearer <accessToken>
+    const piApiResponse = await fetch('https://api.minepi.com/v2/me', {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Accept': 'application/json'
+      }
+    });
+
+    if (!piApiResponse.ok) {
+      const errText = await piApiResponse.text().catch(() => '');
+      console.warn(`[Pi Auth] MinePi /v2/me failed with status ${piApiResponse.status}: ${errText}`);
+      return res.status(401).json({
+        success: false,
+        error: `Pi Network authentication failed: Invalid or expired access token (status ${piApiResponse.status}).`
+      });
+    }
+
+    const piUserData: any = await piApiResponse.json();
+    if (!piUserData || (!piUserData.uid && !piUserData.username)) {
+      return res.status(400).json({ success: false, error: 'Invalid user payload received from Pi Network.' });
+    }
+
+    const piUid = String(piUserData.uid || '').trim();
+    const piUsername = String(piUserData.username || `pioneer_${piUid.slice(0, 6)}`).trim();
+
+    // Find existing user or register new Pioneer
+    let user = users.find(u =>
+      (u.piUsername && u.piUsername.toLowerCase() === piUsername.toLowerCase()) ||
+      u.id === `usr_pi_${piUid}` ||
+      u.username.toLowerCase() === piUsername.toLowerCase()
+    );
+
+    if (user) {
+      // Update session information
+      user.piUsername = piUsername;
+      if (!user.profileImage || user.profileImage.includes('unsplash') || user.profileImage.includes('dicebear') || user.profileImage.includes('bottts')) {
+        user.profileImage = getDeterministicEmoji(piUsername);
+      }
+    } else {
+      user = {
+        id: `usr_pi_${piUid || Date.now()}`,
+        username: piUsername,
+        email: `${piUsername.toLowerCase().replace(/[^a-z0-9]/g, '')}@pioneer.network`,
+        profileImage: getDeterministicEmoji(piUsername),
+        role: 'user',
+        premiumStatus: false,
+        subscriptionPlan: 'free',
+        piUsername: piUsername,
+        piWalletAddress: `GD${crypto.createHash('sha256').update(piUid || piUsername).digest('hex').substring(0, 8).toUpperCase()}...PI`,
+        createdAt: new Date().toISOString(),
+        notificationSettings: {
+          newMovies: true,
+          newEpisodes: true,
+          announcements: true,
+          subscription: true
+        }
+      };
+      users.push(user);
+    }
+
+    const sessionToken = `jwt_pi_session_${user.id}_${Date.now()}`;
+
+    return res.json({
+      success: true,
+      token: sessionToken,
+      user,
+      piUser: {
+        uid: piUid,
+        username: piUsername,
+        roles: piUserData.roles || []
+      }
+    });
+  } catch (error: any) {
+    console.error('[Pi Auth Server] Error verifying access token:', error);
+    return res.status(500).json({ success: false, error: 'Internal server error while authenticating with Pi Network.' });
+  }
 });
 
 // Real Firebase Administrator Authentication Verification Endpoint
@@ -1663,7 +1775,285 @@ app.post('/api/notifications/read', (req: Request, res: Response) => {
 });
 
 // PI NETWORK PAYMENT INTEGRATION
-// Step 1: Initialize payment order on server
+// Helper to retrieve Pi Server API Key strictly from server environment variable
+const getPiServerApiKey = (): string => {
+  return (process.env.PI_SERVER_API_KEY || process.env.PI_NETWORK_API_KEY || '').trim();
+};
+
+// Requirement 4: Backend uses Pi Server API Key from environment variable to approve payment
+// POST https://api.minepi.com/v2/payments/{paymentId}/approve
+app.post(['/api/pi/payments/approve', '/api/pi/approve-payment'], async (req: Request, res: Response) => {
+  try {
+    const { paymentId, plan = 'monthly', userId } = req.body;
+    if (!paymentId) {
+      return res.status(400).json({ success: false, error: 'paymentId is required for approval.' });
+    }
+
+    const piServerApiKey = getPiServerApiKey();
+    if (!piServerApiKey) {
+      console.error('[Pi Payment Approval] Missing PI_SERVER_API_KEY environment variable.');
+      return res.status(500).json({
+        success: false,
+        error: 'Pi Server API Key is not configured on the backend server.'
+      });
+    }
+
+    console.info(`[Pi Payment] Approving payment ${paymentId} via Pi Network API...`);
+
+    const piApproveRes = await fetch(`https://api.minepi.com/v2/payments/${encodeURIComponent(paymentId)}/approve`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Key ${piServerApiKey}`,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    const responseText = await piApproveRes.text();
+    let responseData: any = {};
+    try {
+      responseData = JSON.parse(responseText);
+    } catch {
+      responseData = { message: responseText };
+    }
+
+    if (!piApproveRes.ok) {
+      // If already developer_approved, continue gracefully
+      const isAlreadyApproved =
+        responseData?.status?.developer_approved ||
+        String(responseData?.message || '').toLowerCase().includes('already approved');
+
+      if (!isAlreadyApproved) {
+        console.error(`[Pi Payment Approval] Pi API rejected approval (${piApproveRes.status}):`, responseData);
+        return res.status(piApproveRes.status).json({
+          success: false,
+          error: responseData?.message || responseData?.error || `Pi payment approval failed with status ${piApproveRes.status}`
+        });
+      }
+      console.info(`[Pi Payment] Payment ${paymentId} was already approved.`);
+    }
+
+    // Save or update pending payment entry
+    let payment = payments.find(p => p.piPaymentId === paymentId || p.transactionId === paymentId);
+    if (payment) {
+      payment.status = 'approved';
+    } else {
+      const pricePi = plan === 'annual' ? appSettings.annualPricePi : appSettings.monthlyPricePi;
+      payment = {
+        id: 'pay-' + Date.now(),
+        userId: userId || 'usr_demo',
+        transactionId: paymentId,
+        piPaymentId: paymentId,
+        amount: pricePi,
+        currency: 'Pi',
+        status: 'approved',
+        plan,
+        createdAt: new Date().toISOString()
+      };
+      payments.unshift(payment);
+    }
+
+    return res.json({
+      success: true,
+      message: 'Payment successfully approved by PiFlix+ server.',
+      paymentId,
+      status: 'approved'
+    });
+  } catch (err: any) {
+    console.error('[Pi Payment Approval Error]:', err);
+    return res.status(500).json({
+      success: false,
+      error: err?.message || 'Server error during Pi payment approval.'
+    });
+  }
+});
+
+// Requirement 6: Backend uses Pi Server API Key to complete payment with txid
+// POST https://api.minepi.com/v2/payments/{paymentId}/complete
+// Requirement 7: Only after successful completion should the app confirm purchase and unlock Premium/VIP
+app.post(['/api/pi/payments/complete', '/api/pi/complete-payment'], async (req: Request, res: Response) => {
+  try {
+    const { paymentId, txid, plan = 'monthly', userId } = req.body;
+    if (!paymentId || !txid) {
+      return res.status(400).json({ success: false, error: 'Both paymentId and txid are required for completion.' });
+    }
+
+    const piServerApiKey = getPiServerApiKey();
+    if (!piServerApiKey) {
+      console.error('[Pi Payment Completion] Missing PI_SERVER_API_KEY environment variable.');
+      return res.status(500).json({
+        success: false,
+        error: 'Pi Server API Key is not configured on the backend server.'
+      });
+    }
+
+    console.info(`[Pi Payment] Completing payment ${paymentId} with txid ${txid} via Pi Network API...`);
+
+    const piCompleteRes = await fetch(`https://api.minepi.com/v2/payments/${encodeURIComponent(paymentId)}/complete`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Key ${piServerApiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ txid })
+    });
+
+    const responseText = await piCompleteRes.text();
+    let responseData: any = {};
+    try {
+      responseData = JSON.parse(responseText);
+    } catch {
+      responseData = { message: responseText };
+    }
+
+    if (!piCompleteRes.ok) {
+      // If already developer_completed, we can proceed to grant access
+      const isAlreadyCompleted =
+        responseData?.status?.developer_completed ||
+        String(responseData?.message || '').toLowerCase().includes('already completed');
+
+      if (!isAlreadyCompleted) {
+        console.error(`[Pi Payment Completion] Pi API rejected completion (${piCompleteRes.status}):`, responseData);
+        return res.status(piCompleteRes.status).json({
+          success: false,
+          error: responseData?.message || responseData?.error || `Pi payment completion failed with status ${piCompleteRes.status}`
+        });
+      }
+      console.info(`[Pi Payment] Payment ${paymentId} was already completed.`);
+    }
+
+    // Only after successful completion should the app confirm the purchase and unlock the Premium/VIP content
+    const selectedPlan = plan === 'annual' ? 'annual' : 'monthly';
+    const amountPaid = selectedPlan === 'annual' ? appSettings.annualPricePi : appSettings.monthlyPricePi;
+
+    // Update payment record in database
+    let payment = payments.find(p => p.piPaymentId === paymentId || p.transactionId === paymentId || p.transactionId === txid);
+    if (payment) {
+      payment.status = 'completed';
+      payment.transactionId = txid;
+      payment.piPaymentId = paymentId;
+    } else {
+      payment = {
+        id: 'pay-' + Date.now(),
+        userId: userId || 'usr_demo',
+        transactionId: txid,
+        piPaymentId: paymentId,
+        amount: amountPaid,
+        currency: 'Pi',
+        status: 'completed',
+        plan: selectedPlan,
+        createdAt: new Date().toISOString()
+      };
+      payments.unshift(payment);
+    }
+
+    // Identify user to upgrade
+    const targetUserId = userId || payment.userId;
+    let user = users.find(u => u.id === targetUserId || (u.piUsername && u.piUsername === responseData?.user_uid));
+    if (!user && users.length > 0) {
+      user = users[0];
+    }
+
+    const now = new Date();
+    const expiry = new Date();
+    if (selectedPlan === 'annual') {
+      expiry.setFullYear(now.getFullYear() + 1);
+    } else {
+      expiry.setMonth(now.getMonth() + 1);
+    }
+
+    const subscription: Subscription = {
+      id: 'sub-' + Date.now(),
+      userId: user ? user.id : (targetUserId || 'usr_demo'),
+      plan: selectedPlan,
+      pricePi: amountPaid,
+      transactionId: txid,
+      status: 'active',
+      startDate: now.toISOString(),
+      expiryDate: expiry.toISOString()
+    };
+    subscriptions.unshift(subscription);
+
+    if (user) {
+      user.premiumStatus = true;
+      user.subscriptionPlan = selectedPlan;
+      user.subscriptionExpiry = expiry.toISOString();
+    }
+
+    // Send celebration notification to user
+    notifications.unshift({
+      id: 'notif-' + Date.now(),
+      userId: user ? user.id : (targetUserId || 'usr_demo'),
+      title: '⭐ Welcome to PiFlix+ VIP Pioneer!',
+      message: `Your ${selectedPlan} subscription of ${amountPaid} Pi has been verified on the blockchain. Ad-free 4K streaming is now unlocked!`,
+      type: 'premium',
+      createdAt: new Date().toISOString(),
+      read: false
+    });
+
+    return res.json({
+      success: true,
+      message: 'Pi payment verified and completed on blockchain! Premium access unlocked.',
+      paymentId,
+      txid,
+      subscription,
+      user
+    });
+  } catch (err: any) {
+    console.error('[Pi Payment Completion Error]:', err);
+    return res.status(500).json({
+      success: false,
+      error: err?.message || 'Server error during Pi payment completion.'
+    });
+  }
+});
+
+// Requirement 8: Handle onIncompletePaymentFound during authentication
+app.post('/api/pi/payments/incomplete', async (req: Request, res: Response) => {
+  try {
+    const { payment, userId } = req.body;
+    if (!payment) {
+      return res.status(400).json({ success: false, error: 'Payment payload is required.' });
+    }
+
+    const paymentId = payment.identifier || payment.id || payment.paymentId;
+    const txid = payment.transaction?.txid;
+    const isCompleted = payment.status?.developer_completed;
+    const piServerApiKey = getPiServerApiKey();
+
+    console.info(`[Pi Payment] Incomplete payment reported: ${paymentId}, txid: ${txid}, completed: ${isCompleted}`);
+
+    if (paymentId && txid && !isCompleted && piServerApiKey) {
+      console.info(`[Pi Payment] Auto-completing pending incomplete payment ${paymentId}...`);
+      const completeRes = await fetch(`https://api.minepi.com/v2/payments/${encodeURIComponent(paymentId)}/complete`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Key ${piServerApiKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ txid })
+      });
+
+      if (completeRes.ok) {
+        console.info(`[Pi Payment] Incomplete payment ${paymentId} completed successfully.`);
+        if (userId) {
+          const user = users.find(u => u.id === userId);
+          if (user) {
+            user.premiumStatus = true;
+            user.subscriptionPlan = payment.metadata?.plan || 'monthly';
+          }
+        }
+        return res.json({ success: true, completed: true, paymentId, txid });
+      }
+    }
+
+    return res.json({ success: true, completed: Boolean(isCompleted), paymentId });
+  } catch (err: any) {
+    console.error('[Pi Incomplete Payment Handler Error]:', err);
+    return res.status(500).json({ success: false, error: err?.message || 'Failed to process incomplete payment' });
+  }
+});
+
+// Legacy / Helper endpoint: Initialize payment order on server
 app.post('/api/pi/create-payment', (req: Request, res: Response) => {
   const { userId = 'usr_demo', plan = 'monthly' } = req.body;
   const pricePi = plan === 'annual' ? appSettings.annualPricePi : appSettings.monthlyPricePi;
@@ -1694,20 +2084,18 @@ app.post('/api/pi/create-payment', (req: Request, res: Response) => {
   });
 });
 
-// Step 2: Verify Pi payment server-side and activate subscription
+// Legacy / Direct verification fallback
 app.post('/api/pi/verify-payment', (req: Request, res: Response) => {
   const { transactionId, piTxId, signedPayload } = req.body;
-  const payment = payments.find(p => p.transactionId === transactionId);
+  const payment = payments.find(p => p.transactionId === transactionId || p.piPaymentId === transactionId);
 
   if (!payment) {
     return res.status(404).json({ error: 'Payment record not found' });
   }
 
-  // Server-side verification simulation / verification against Pi Network API
   payment.status = 'completed';
   payment.piPaymentId = piTxId || `pi_tx_hash_${Date.now()}`;
 
-  // Update or activate user subscription
   const user = users.find(u => u.id === payment.userId);
   const now = new Date();
   const expiry = new Date();
@@ -1735,7 +2123,6 @@ app.post('/api/pi/verify-payment', (req: Request, res: Response) => {
     user.subscriptionExpiry = expiry.toISOString();
   }
 
-  // Send celebration notification
   notifications.unshift({
     id: 'notif-' + Date.now(),
     userId: payment.userId,
