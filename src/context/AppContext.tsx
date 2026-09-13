@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { Movie, TVSeries, Episode, User, AppSettings, WatchHistoryItem, WatchlistItem, LikedItem, AppNotification, ContentType, ContentItem } from '../types';
 import { initialSettings, defaultUsers } from '../data/mockData';
-import { subscribeToContent } from '../lib/firebaseContent';
+import { subscribeToContent, fetchSettingsFromFirestore, saveSettingsToFirestore, subscribeToSettings } from '../lib/firebaseContent';
 import { auth } from '../lib/firebase';
 import { onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
 import { loginAdminWithEmail, loginAdminWithGoogle, registerAdminAccount, logoutAdminUser, verifyTokenWithBackend } from '../lib/firebaseAuth';
@@ -40,6 +40,7 @@ interface AppContextType {
   movies: Movie[];
   seriesList: TVSeries[];
   refreshContent: () => Promise<void>;
+  removeContentItem: (id: string) => void;
 
   // Navigation / Views
   activeTab: 'home' | 'movies' | 'series' | 'trending' | 'search' | 'watchlist' | 'premium' | 'admin' | 'profile';
@@ -96,7 +97,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return (saved as 'dark' | 'light') || 'dark';
   });
 
-  const [settings, setSettings] = useState<AppSettings>(initialSettings);
+  const [settings, setSettings] = useState<AppSettings>(() => {
+    const saved = localStorage.getItem('piflix_app_settings');
+    if (saved) {
+      try {
+        return { ...initialSettings, ...JSON.parse(saved) };
+      } catch (e) {
+        console.warn('Failed to parse cached app settings:', e);
+      }
+    }
+    return initialSettings;
+  });
   const [currentUser, setCurrentUser] = useState<User>(() => {
     const saved = localStorage.getItem('piflix_current_user');
     if (saved) {
@@ -277,94 +288,118 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     localStorage.setItem('piflix_current_user', JSON.stringify(currentUser));
   }, [currentUser]);
 
+  // Track permanently deleted content IDs across reloads/syncs
+  const getDeletedIds = (): Set<string> => {
+    try {
+      const stored = localStorage.getItem('piflix_deleted_content_ids');
+      if (stored) return new Set(JSON.parse(stored));
+    } catch {}
+    return new Set();
+  };
+
+  // Remove a content item immediately from local state and remember its deleted status
+  const removeContentItem = (id: string) => {
+    try {
+      const currentDeleted = getDeletedIds();
+      currentDeleted.add(id);
+      localStorage.setItem('piflix_deleted_content_ids', JSON.stringify(Array.from(currentDeleted)));
+    } catch {}
+
+    setMovies(prev => prev.filter(m => m.id !== id));
+    setSeriesList(prev => prev.filter(s => s.id !== id));
+    setSelectedContent(prev => (prev?.id === id ? null : prev));
+    setActivePlayingItem(prev => (prev?.content.id === id ? null : prev));
+  };
+
   // Helper to merge ContentItems into Movie / TVSeries state
   const mergeContentItems = (items: ContentItem[]) => {
-    if (!items || items.length === 0) return;
+    if (!items) return;
+    const deleted = getDeletedIds();
+    const activeItems = items.filter(i => !deleted.has(i.id));
 
-    const publishedMovies = items.filter(i => i.type === 'movie' && i.published);
-    const publishedSeries = items.filter(i => i.type === 'series' && i.published);
+    const publishedMovies = activeItems.filter(i => i.type === 'movie' && i.published);
+    const publishedSeries = activeItems.filter(i => i.type === 'series' && i.published);
 
-    if (publishedMovies.length > 0) {
-      setMovies(prev => {
-        const map = new Map(prev.map(m => [m.id, m]));
-        publishedMovies.forEach(item => {
-          map.set(item.id, {
-            id: item.id,
-            title: item.title,
-            description: item.description,
-            poster: item.coverImageUrl,
-            backdrop: item.coverImageUrl,
-            coverImageUrl: item.coverImageUrl,
-            videoUrl: item.videoUrl,
-            trailerUrl: item.trailerUrl || '',
-            year: item.year,
-            duration: 95,
-            genre: Array.isArray(item.genre) ? item.genre : [item.genre],
-            language: item.language,
-            country: 'International',
-            director: 'Creator',
-            cast: [],
-            rating: item.rating,
-            ageClassification: 'PG-13',
-            isPremium: item.accessType === 'premium',
-            accessType: item.accessType,
-            isFeatured: false,
-            isTrending: true,
-            isPublished: item.published,
-            published: item.published,
-            qualityBadge: item.quality,
-            viewsCount: 0,
-            likesCount: 0,
-            createdAt: item.createdAt,
-            updatedAt: item.updatedAt
-          });
+    setMovies(prev => {
+      const filteredPrev = prev.filter(m => !deleted.has(m.id));
+      const map = new Map(filteredPrev.map(m => [m.id, m]));
+      publishedMovies.forEach(item => {
+        map.set(item.id, {
+          id: item.id,
+          title: item.title,
+          description: item.description,
+          poster: item.coverImageUrl,
+          backdrop: item.coverImageUrl,
+          coverImageUrl: item.coverImageUrl,
+          videoUrl: item.videoUrl,
+          trailerUrl: item.trailerUrl || '',
+          year: item.year,
+          duration: 95,
+          genre: Array.isArray(item.genre) ? item.genre : [item.genre],
+          language: item.language,
+          country: 'International',
+          director: 'Creator',
+          cast: [],
+          rating: item.rating,
+          ageClassification: 'PG-13',
+          isPremium: item.accessType === 'premium',
+          accessType: item.accessType,
+          isFeatured: false,
+          isTrending: true,
+          isPublished: item.published,
+          published: item.published,
+          qualityBadge: item.quality,
+          viewsCount: 0,
+          likesCount: 0,
+          createdAt: item.createdAt,
+          updatedAt: item.updatedAt
         });
-        return Array.from(map.values());
       });
-    }
+      return Array.from(map.values());
+    });
 
-    if (publishedSeries.length > 0) {
-      setSeriesList(prev => {
-        const map = new Map(prev.map(s => [s.id, s]));
-        publishedSeries.forEach(item => {
-          map.set(item.id, {
-            id: item.id,
-            title: item.title,
-            description: item.description,
-            poster: item.coverImageUrl,
-            backdrop: item.coverImageUrl,
-            coverImageUrl: item.coverImageUrl,
-            trailerUrl: item.trailerUrl || '',
-            year: item.year,
-            genre: Array.isArray(item.genre) ? item.genre : [item.genre],
-            language: item.language,
-            country: 'International',
-            director: 'Creator',
-            cast: [],
-            rating: item.rating,
-            ageClassification: 'PG-13',
-            isPremium: item.accessType === 'premium',
-            accessType: item.accessType,
-            isFeatured: false,
-            isTrending: true,
-            isPublished: item.published,
-            published: item.published,
-            qualityBadge: item.quality,
-            viewsCount: 0,
-            likesCount: 0,
-            seasonsCount: 1,
-            createdAt: item.createdAt,
-            updatedAt: item.updatedAt
-          });
+    setSeriesList(prev => {
+      const filteredPrev = prev.filter(s => !deleted.has(s.id));
+      const map = new Map(filteredPrev.map(s => [s.id, s]));
+      publishedSeries.forEach(item => {
+        map.set(item.id, {
+          id: item.id,
+          title: item.title,
+          description: item.description,
+          poster: item.coverImageUrl,
+          backdrop: item.coverImageUrl,
+          coverImageUrl: item.coverImageUrl,
+          trailerUrl: item.trailerUrl || '',
+          year: item.year,
+          genre: Array.isArray(item.genre) ? item.genre : [item.genre],
+          language: item.language,
+          country: 'International',
+          director: 'Creator',
+          cast: [],
+          rating: item.rating,
+          ageClassification: 'PG-13',
+          isPremium: item.accessType === 'premium',
+          accessType: item.accessType,
+          isFeatured: false,
+          isTrending: true,
+          isPublished: item.published,
+          published: item.published,
+          qualityBadge: item.quality,
+          viewsCount: 0,
+          likesCount: 0,
+          seasonsCount: 1,
+          createdAt: item.createdAt,
+          updatedAt: item.updatedAt
         });
-        return Array.from(map.values());
       });
-    }
+      return Array.from(map.values());
+    });
   };
 
   // Load initial content & settings from API
   const refreshContent = async () => {
     try {
+      const deleted = getDeletedIds();
       const [moviesRes, seriesRes, contentRes, settingsRes, historyRes, watchlistRes, notifsRes] = await Promise.all([
         fetch('/api/movies?publishedOnly=true').then(r => r.json()).catch(() => []),
         fetch('/api/series').then(r => r.json()).catch(() => []),
@@ -375,10 +410,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         fetch('/api/notifications').then(r => r.json()).catch(() => [])
       ]);
 
-      if (Array.isArray(moviesRes)) setMovies(moviesRes);
-      if (Array.isArray(seriesRes)) setSeriesList(seriesRes);
-      if (Array.isArray(contentRes)) mergeContentItems(contentRes);
-      if (settingsRes && settingsRes.appName) setSettings(settingsRes);
+      if (Array.isArray(moviesRes)) {
+        setMovies(moviesRes.filter(m => !deleted.has(m.id)));
+      }
+      if (Array.isArray(seriesRes)) {
+        setSeriesList(seriesRes.filter(s => !deleted.has(s.id)));
+      }
+      if (Array.isArray(contentRes)) {
+        mergeContentItems(contentRes);
+      }
+      if (settingsRes && settingsRes.appName) {
+        setSettings(prev => {
+          const merged = { ...prev, ...settingsRes };
+          localStorage.setItem('piflix_app_settings', JSON.stringify(merged));
+          return merged;
+        });
+      }
       if (Array.isArray(historyRes)) setWatchHistory(historyRes);
       if (Array.isArray(watchlistRes)) setWatchlist(watchlistRes);
       if (Array.isArray(notifsRes)) setNotifications(notifsRes);
@@ -395,6 +442,31 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return () => unsubscribe();
   }, []);
 
+  // Real-time Firestore Settings sync: Settings updates propagate in real time across the platform!
+  useEffect(() => {
+    fetchSettingsFromFirestore().then((fbSettings) => {
+      if (fbSettings && fbSettings.appName) {
+        setSettings(prev => {
+          const merged = { ...prev, ...fbSettings };
+          localStorage.setItem('piflix_app_settings', JSON.stringify(merged));
+          return merged;
+        });
+      }
+    });
+
+    const unsubscribe = subscribeToSettings((firestoreSettings) => {
+      if (firestoreSettings && firestoreSettings.appName) {
+        setSettings(prev => {
+          const merged = { ...prev, ...firestoreSettings };
+          localStorage.setItem('piflix_app_settings', JSON.stringify(merged));
+          return merged;
+        });
+      }
+    });
+
+    return () => unsubscribe();
+  }, []);
+
   useEffect(() => {
     refreshContent();
   }, [currentUser.id]);
@@ -404,18 +476,42 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const updateSettings = async (newSettings: Partial<AppSettings>) => {
+    // 1. Optimistically update local state & disk cache immediately
+    setSettings(prev => {
+      const merged = { ...prev, ...newSettings };
+      localStorage.setItem('piflix_app_settings', JSON.stringify(merged));
+      return merged;
+    });
+
+    // 2. Persist to production Firestore database
     try {
+      await saveSettingsToFirestore(newSettings);
+    } catch (fsErr) {
+      console.warn('Firestore settings write notice:', fsErr);
+    }
+
+    // 3. Persist to backend server API
+    try {
+      const token = adminToken || localStorage.getItem('piflix_admin_token');
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+      }
       const res = await fetch('/api/settings', {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify(newSettings)
       });
       const data = await res.json();
-      if (data.settings) {
-        setSettings(data.settings);
+      if (data && data.settings) {
+        setSettings(prev => {
+          const merged = { ...prev, ...data.settings };
+          localStorage.setItem('piflix_app_settings', JSON.stringify(merged));
+          return merged;
+        });
       }
     } catch (err) {
-      setSettings(prev => ({ ...prev, ...newSettings }));
+      console.warn('Backend settings update notice:', err);
     }
   };
 
@@ -634,6 +730,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         movies,
         seriesList,
         refreshContent,
+        removeContentItem,
         activeTab,
         setActiveTab,
         selectedContent,

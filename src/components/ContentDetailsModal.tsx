@@ -384,36 +384,28 @@ const ContentDetailsModalInner: React.FC<ContentDetailsModalInnerProps> = ({ con
                     <div
                       key={ep.id}
                       onClick={() => playVideo(selectedContent, ep)}
-                      className="group/ep flex flex-col sm:flex-row items-start sm:items-center gap-4 p-3.5 rounded-xl bg-zinc-900/40 hover:bg-zinc-800/60 border border-zinc-800/60 hover:border-purple-500/40 transition cursor-pointer"
+                      className="group/ep flex items-center justify-between gap-4 p-3.5 rounded-xl bg-zinc-900/40 hover:bg-zinc-800/60 border border-zinc-800/60 hover:border-purple-500/40 transition cursor-pointer"
                     >
-                      {/* Thumbnail with Play Overlay */}
-                      <div className="relative w-full sm:w-44 aspect-video rounded-lg overflow-hidden bg-zinc-950 shrink-0">
-                        <img
-                          src={ep.thumbnail || selectedContent.backdrop}
-                          alt={ep.title}
-                          className="w-full h-full object-cover group-hover/ep:scale-105 transition duration-300"
-                        />
-                        <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover/ep:opacity-100 transition">
-                          <Play className="w-8 h-8 text-white fill-current drop-shadow-md" />
-                        </div>
-                        <div className="absolute bottom-1.5 right-1.5 bg-black/80 px-1.5 py-0.5 rounded text-[10px] font-bold text-white">
-                          {ep.duration}m
-                        </div>
-                      </div>
-
-                      {/* Episode Details */}
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 mb-1">
-                          <span className="text-purple-400 font-extrabold text-xs">
-                            Ep {ep.episodeNumber}
-                          </span>
-                          <h3 className="text-sm font-bold text-white group-hover/ep:text-purple-300 transition line-clamp-1">
+                      {/* Episode Details: Number, Title, Description, Duration */}
+                      <div className="flex items-center gap-3.5 min-w-0 flex-1">
+                        <span className="shrink-0 px-2.5 py-1 rounded-md bg-purple-950/80 border border-purple-500/30 text-purple-300 font-extrabold text-xs">
+                          Ep {ep.episodeNumber}
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <h3 className="text-sm font-bold text-white group-hover/ep:text-purple-300 transition truncate">
                             {ep.title}
                           </h3>
+                          {ep.description && (
+                            <p className="text-xs text-zinc-400 line-clamp-1 leading-relaxed mt-0.5">
+                              {ep.description}
+                            </p>
+                          )}
                         </div>
-                        <p className="text-xs text-zinc-400 line-clamp-2 leading-relaxed">
-                          {ep.description}
-                        </p>
+                        {ep.duration ? (
+                          <span className="shrink-0 text-xs font-medium text-zinc-400">
+                            {ep.duration}m
+                          </span>
+                        ) : null}
                       </div>
 
                       {/* Watch Action */}
@@ -422,9 +414,10 @@ const ContentDetailsModalInner: React.FC<ContentDetailsModalInnerProps> = ({ con
                           e.stopPropagation();
                           playVideo(selectedContent, ep);
                         }}
-                        className="self-end sm:self-center px-4 py-2 bg-zinc-800 hover:bg-purple-600 text-white text-xs font-semibold rounded-lg transition"
+                        className="shrink-0 px-4 py-2 bg-zinc-800 hover:bg-purple-600 text-white text-xs font-semibold rounded-lg transition flex items-center gap-1.5"
                       >
-                        Play
+                        <Play className="w-3.5 h-3.5 fill-current" />
+                        <span>Play</span>
                       </button>
                     </div>
                   ))

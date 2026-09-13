@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import Hls from 'hls.js';
-import { Play, Pause, Volume2, VolumeX, Maximize, Minimize, RotateCcw, RotateCw, SkipForward, ArrowLeft, Settings, Subtitles, ShieldAlert, Sparkles, ExternalLink, Zap } from 'lucide-react';
+import { Play, Pause, Volume2, VolumeX, Maximize, Minimize, RotateCcw, RotateCw, SkipForward, ArrowLeft, Settings, Subtitles, ShieldAlert, Sparkles, ExternalLink, Zap, X } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { Episode, Movie, TVSeries, AdData } from '../types';
 import { sampleAds } from '../data/mockData';
@@ -76,6 +76,25 @@ const VideoPlayerInner: React.FC<VideoPlayerInnerProps> = ({ activeItem }) => {
   // Determine video URL
   const streamUrl = episode?.hlsUrl || episode?.videoUrl || (content as Movie).hlsUrl || (content as Movie).videoUrl || 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4';
 
+  // Extract YouTube ID if streamUrl is a YouTube link
+  const extractYouTubeId = (url?: string): string | null => {
+    if (!url || typeof url !== 'string') return null;
+    const trimmed = url.trim();
+    const patterns = [
+      /(?:youtube\.com\/watch\?(?:.*&)?v=|youtu\.be\/|youtube\.com\/embed\/|youtube\.com\/v\/|youtube\.com\/shorts\/)([a-zA-Z0-9_-]{11})/,
+      /^([a-zA-Z0-9_-]{11})$/
+    ];
+    for (const regex of patterns) {
+      const match = trimmed.match(regex);
+      if (match && match[1]) {
+        return match[1];
+      }
+    }
+    return null;
+  };
+
+  const youtubeId = extractYouTubeId(streamUrl);
+
   // Clear resume notification after 4 seconds
   useEffect(() => {
     if (resumeNotification) {
@@ -86,6 +105,12 @@ const VideoPlayerInner: React.FC<VideoPlayerInnerProps> = ({ activeItem }) => {
 
   // Hls.js stream initialization
   useEffect(() => {
+    if (youtubeId) {
+      setIsLoading(false);
+      setHasError(false);
+      return;
+    }
+
     const video = videoRef.current;
     if (!video) return;
 
@@ -302,6 +327,55 @@ const VideoPlayerInner: React.FC<VideoPlayerInnerProps> = ({ activeItem }) => {
   // Episode skip intro
   const skipIntroSec = episode?.skipIntroSec || 12;
   const isWithinIntroWindow = currentTime > 0 && currentTime < skipIntroSec;
+
+  if (youtubeId) {
+    return (
+      <div
+        ref={containerRef}
+        className="fixed inset-0 z-50 bg-black flex flex-col items-center justify-center select-none overflow-hidden"
+      >
+        {/* Top Header Navigation Bar */}
+        <div className="absolute top-0 left-0 right-0 z-50 p-4 bg-gradient-to-b from-black/90 to-transparent flex items-center justify-between">
+          <button
+            onClick={closePlayer}
+            className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-zinc-900/90 hover:bg-purple-600 text-white text-xs font-semibold border border-white/10 transition shadow-lg"
+          >
+            <ArrowLeft className="w-4 h-4" />
+            <span>Back to PiFlix+</span>
+          </button>
+
+          <div className="text-center px-4">
+            <h1 className="text-sm font-bold text-white truncate max-w-xs md:max-w-md">
+              {content.title}
+            </h1>
+            {episode && (
+              <p className="text-xs text-purple-300 truncate">
+                Episode {episode.episodeNumber}: {episode.title}
+              </p>
+            )}
+          </div>
+
+          <button
+            onClick={closePlayer}
+            className="p-2.5 rounded-full bg-zinc-900/90 hover:bg-rose-600 text-white border border-white/10 transition shadow-lg"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        {/* YouTube Responsive Embed */}
+        <div className="w-full h-full pt-16 pb-3 px-3 flex items-center justify-center">
+          <iframe
+            src={`https://www.youtube-nocookie.com/embed/${youtubeId}?autoplay=1&rel=0&modestbranding=1&playsinline=1`}
+            title={content.title}
+            className="w-full h-full max-w-6xl aspect-video rounded-xl shadow-2xl border border-zinc-800"
+            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+            allowFullScreen
+          />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div

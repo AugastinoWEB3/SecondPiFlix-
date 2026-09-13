@@ -45,8 +45,8 @@ service cloud.firestore {
     function isValidContent(data) {
       return data.title is string && data.title.size() > 0 && data.title.size() <= 300 &&
              data.type is string && (data.type == 'movie' || data.type == 'series') &&
-             data.coverImageUrl is string && data.coverImageUrl.size() > 0 && data.coverImageUrl.size() <= 1500 &&
-             data.videoUrl is string && data.videoUrl.size() <= 1500 &&
+             data.coverImageUrl is string && data.coverImageUrl.size() > 0 && data.coverImageUrl.size() <= 5000 &&
+             data.videoUrl is string && data.videoUrl.size() <= 5000 &&
              data.year is number && data.year >= 1900 && data.year <= 2100 &&
              data.rating is number && data.rating >= 0 && data.rating <= 10 &&
              data.quality is string && (data.quality == 'HD' || data.quality == 'FHD' || data.quality == '4K') &&
@@ -65,6 +65,15 @@ service cloud.firestore {
       allow create: if isAdmin() && isValidId(contentId) && isValidContent(incoming());
       allow update: if isAdmin() && isValidId(contentId) && isValidContent(incoming());
       allow delete: if isAdmin() && isValidId(contentId);
+    }
+
+    // Settings collection (platform configuration, pricing, announcements)
+    // All users can read settings for pricing, VIP tiers, and maintenance status.
+    // Only authenticated administrators can modify settings.
+    match /settings/{settingId} {
+      allow get, list: if true;
+      allow create, update: if isAdmin();
+      allow delete: if isAdmin();
     }
 
     // Admin authorization collection (RBAC)

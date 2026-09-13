@@ -47,6 +47,23 @@
         "createdAt": { "type": "string", "maxLength": 100 }
       },
       "required": ["email", "role"]
+    },
+    "settings": {
+      "title": "AppSettings",
+      "description": "Global application configuration and pricing settings",
+      "type": "object",
+      "properties": {
+        "appName": { "type": "string", "maxLength": 100 },
+        "appTagline": { "type": "string", "maxLength": 200 },
+        "monthlyPricePi": { "type": "number" },
+        "annualPricePi": { "type": "number" },
+        "freeTrialDays": { "type": "number" },
+        "adFrequencyMinutes": { "type": "number" },
+        "piWalletAddress": { "type": "string", "maxLength": 200 },
+        "maintenanceMode": { "type": "boolean" },
+        "announcementBanner": { "type": "string", "maxLength": 500 }
+      },
+      "required": ["appName", "monthlyPricePi", "annualPricePi"]
     }
   },
   "firestore": {
@@ -57,6 +74,10 @@
     "/admins/{adminId}": {
       "schema": "admin",
       "description": "Admin RBAC authorization records"
+    },
+    "/settings/{settingId}": {
+      "schema": "settings",
+      "description": "Global application configuration documents"
     }
   }
 }

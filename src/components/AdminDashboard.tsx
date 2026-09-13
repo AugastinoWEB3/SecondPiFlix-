@@ -7,7 +7,8 @@ import {
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { ContentItem, Movie, TVSeries, User } from '../types';
-import { saveContent, deleteContent, setPublishedState } from '../lib/firebaseContent';
+import { saveContent, deleteContent, setPublishedState, cleanExistingInvalidMedia } from '../lib/firebaseContent';
+import { uploadMediaToStorage, deleteMediaFromStorage } from '../lib/firebaseStorage';
 import { UserAvatar } from './UserAvatar';
 
 interface EpisodeFormItem {
@@ -28,6 +29,7 @@ export const AdminDashboard: React.FC = () => {
     movies,
     seriesList,
     refreshContent,
+    removeContentItem,
     currentUser,
     playVideo,
     isAdmin,
@@ -38,6 +40,12 @@ export const AdminDashboard: React.FC = () => {
     adminLogout,
     firebaseAdminUser
   } = useApp();
+
+  // Delete confirmation & action states (Fix for Bug 1)
+  const [deleteTargetItem, setDeleteTargetItem] = useState<Movie | TVSeries | null>(null);
+  const [isDeleting, setIsDeleting] = useState<boolean>(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [deleteSuccess, setDeleteSuccess] = useState<string | null>(null);
 
   // Admin Firebase Auth Screen state
   const [authMode, setAuthMode] = useState<'signin' | 'register'>('signin');
@@ -136,6 +144,7 @@ export const AdminDashboard: React.FC = () => {
   useEffect(() => {
     if (isAdmin) {
       loadAdminData();
+      cleanExistingInvalidMedia().catch(e => console.warn('Media reference audit notice:', e));
     }
   }, [isAdmin, adminToken]);
 
@@ -343,7 +352,7 @@ export const AdminDashboard: React.FC = () => {
     setIsModalOpen(true);
   };
 
-  // Handle Video File Upload (Requirement 1 & 16)
+  // Handle Video File Upload (Requirement 1 & 16 & Bug 2)
   const handleVideoFileUpload = async (file: File, episodeIdx?: number) => {
     if (!file) return;
 
@@ -355,49 +364,32 @@ export const AdminDashboard: React.FC = () => {
     }
     setUploadFeedback(`Uploading ${file.name} (${(file.size / (1024 * 1024)).toFixed(1)} MB)...`);
 
-    const formData = new FormData();
-    formData.append('video', file);
-
     try {
-      // Simulate progress progression for user feedback
-      const progressInterval = setInterval(() => {
-        setVideoUploadProgress(prev => (prev < 90 ? prev + 10 : prev));
-      }, 300);
-
-      const res = await fetch('/api/admin/upload/video', {
-        method: 'POST',
-        headers: adminToken ? { Authorization: `Bearer ${adminToken}` } : {},
-        body: formData
+      const permanentUrl = await uploadMediaToStorage(file, 'videos', (pct) => {
+        setVideoUploadProgress(pct);
       });
 
-      clearInterval(progressInterval);
       setVideoUploadProgress(100);
-
-      const data = await res.json();
-      if (data.success && data.url) {
-        if (episodeIdx !== undefined) {
-          setEpisodes(prev => {
-            const next = [...prev];
-            next[episodeIdx] = { ...next[episodeIdx], videoUrl: data.url };
-            return next;
-          });
-          setUploadFeedback(`Episode ${episodeIdx + 1} video uploaded successfully!`);
-        } else {
-          setVideoUrl(data.url);
-          setUploadFeedback(`Main video uploaded successfully (${(data.size / (1024 * 1024)).toFixed(1)} MB). Ready for streaming.`);
-        }
+      if (episodeIdx !== undefined) {
+        setEpisodes(prev => {
+          const next = [...prev];
+          next[episodeIdx] = { ...next[episodeIdx], videoUrl: permanentUrl };
+          return next;
+        });
+        setUploadFeedback(`Episode ${episodeIdx + 1} video uploaded successfully!`);
       } else {
-        setUploadFeedback(`Upload failed: ${data.error || 'Unknown error'}`);
+        setVideoUrl(permanentUrl);
+        setUploadFeedback(`Main video uploaded successfully (${(file.size / (1024 * 1024)).toFixed(1)} MB). Ready for streaming.`);
       }
     } catch (err: any) {
-      setUploadFeedback(`Upload error: ${err?.message || 'Server connection error'}`);
+      setUploadFeedback(`Upload notice: ${err?.message || 'Server connection error'}`);
     } finally {
       setIsUploadingVideo(false);
       setUploadingEpisodeIdx(null);
     }
   };
 
-  // Handle Cover Image File Upload (Requirement 2 & 16)
+  // Handle Cover Image File Upload (Requirement 2 & 16 & Bug 2)
   const handleCoverFileUpload = async (file: File) => {
     if (!file) return;
 
@@ -405,25 +397,16 @@ export const AdminDashboard: React.FC = () => {
     setCoverUploadProgress(20);
     setUploadFeedback(`Uploading cover image ${file.name}...`);
 
-    const formData = new FormData();
-    formData.append('cover', file);
-
     try {
-      const res = await fetch('/api/admin/upload/cover', {
-        method: 'POST',
-        headers: adminToken ? { Authorization: `Bearer ${adminToken}` } : {},
-        body: formData
+      const permanentUrl = await uploadMediaToStorage(file, 'covers', (pct) => {
+        setCoverUploadProgress(pct);
       });
+
       setCoverUploadProgress(100);
-      const data = await res.json();
-      if (data.success && data.url) {
-        setCoverImageUrl(data.url);
-        setUploadFeedback('Cover image uploaded and linked successfully!');
-      } else {
-        setUploadFeedback(`Cover upload failed: ${data.error || 'Unknown error'}`);
-      }
+      setCoverImageUrl(permanentUrl);
+      setUploadFeedback('Cover image uploaded and linked successfully!');
     } catch (err: any) {
-      setUploadFeedback(`Cover upload error: ${err?.message || 'Server connection error'}`);
+      setUploadFeedback(`Cover upload notice: ${err?.message || 'Server connection error'}`);
     } finally {
       setIsUploadingCover(false);
     }
@@ -522,26 +505,52 @@ export const AdminDashboard: React.FC = () => {
     }
   };
 
-  // Delete Content Item (Requirement 15)
-  const handleDeleteContent = async (item: Movie | TVSeries) => {
-    const isSeries = 'seasonsCount' in item;
-    const confirmDelete = window.confirm(`Are you sure you want to permanently delete "${item.title}"? This cannot be undone.`);
-    if (!confirmDelete) return;
+  // Delete Content Item Trigger (Bug 1 Requirement 1)
+  const handleDeleteContent = (item: Movie | TVSeries) => {
+    setDeleteTargetItem(item);
+    setDeleteError(null);
+  };
 
+  // Confirm and Execute Permanent Deletion (Bug 1 Requirement 2)
+  const confirmDeleteAction = async () => {
+    if (!deleteTargetItem) return;
+    setIsDeleting(true);
+    setDeleteError(null);
+
+    const itemId = deleteTargetItem.id;
     try {
-      // Delete from Firestore
-      await deleteContent(item.id);
+      // 1. Delete associated media from Firebase Storage if applicable
+      const coverUrl = deleteTargetItem.coverImageUrl || deleteTargetItem.poster;
+      if (coverUrl) {
+        await deleteMediaFromStorage(coverUrl).catch(() => {});
+      }
+      const vidUrl = (deleteTargetItem as Movie).videoUrl;
+      if (vidUrl) {
+        await deleteMediaFromStorage(vidUrl).catch(() => {});
+      }
 
-      // Delete from server API
-      await fetch(`/api/content/${item.id}`, {
+      // 2. Delete document from production Firestore
+      await deleteContent(itemId);
+
+      // 3. Delete from server API
+      await fetch(`/api/content/${itemId}`, {
         method: 'DELETE',
         headers: adminToken ? { Authorization: `Bearer ${adminToken}` } : {}
       });
 
+      // 4. Update UI immediately
+      removeContentItem(itemId);
       await refreshContent();
       await loadAdminData();
-    } catch (err) {
-      console.error('Delete error', err);
+
+      setDeleteSuccess(`"${deleteTargetItem.title}" was permanently deleted.`);
+      setDeleteTargetItem(null);
+      setTimeout(() => setDeleteSuccess(null), 4000);
+    } catch (err: any) {
+      console.error('Delete content error:', err);
+      setDeleteError(err?.message || 'Failed to delete content item. Please try again.');
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -979,6 +988,37 @@ export const AdminDashboard: React.FC = () => {
               </span>
             </div>
           </div>
+
+          {/* Delete Feedback Banners */}
+          {deleteSuccess && (
+            <div className="p-3.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs flex items-center justify-between gap-2 shadow-lg">
+              <div className="flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4 shrink-0" />
+                <span className="font-medium">{deleteSuccess}</span>
+              </div>
+              <button
+                onClick={() => setDeleteSuccess(null)}
+                className="text-emerald-400 hover:text-white transition"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
+
+          {deleteError && (
+            <div className="p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-400 text-xs flex items-center justify-between gap-2 shadow-lg">
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 shrink-0" />
+                <span className="font-medium">{deleteError}</span>
+              </div>
+              <button
+                onClick={() => setDeleteError(null)}
+                className="text-rose-400 hover:text-white transition"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
 
           {/* Organized Content Table (Requirement 18) */}
           <div className="rounded-2xl bg-zinc-900/80 border border-zinc-800 overflow-hidden shadow-xl">
@@ -2006,6 +2046,72 @@ export const AdminDashboard: React.FC = () => {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Content Confirmation Modal (Bug 1 Requirements) */}
+      {deleteTargetItem && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-xs">
+          <div className="w-full max-w-md bg-zinc-900 border border-zinc-800 rounded-2xl shadow-2xl overflow-hidden p-6 space-y-4">
+            <div className="flex items-center gap-3 text-rose-500">
+              <div className="p-2.5 rounded-xl bg-rose-500/10 border border-rose-500/20">
+                <Trash2 className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-white">Delete Content</h3>
+                <p className="text-xs text-zinc-400">Action cannot be undone.</p>
+              </div>
+            </div>
+
+            <p className="text-sm text-zinc-300">
+              Are you sure you want to permanently delete this item?
+            </p>
+
+            <div className="p-3 rounded-xl bg-zinc-950 border border-zinc-800 text-xs text-zinc-400 space-y-1">
+              <div className="font-bold text-white truncate">{deleteTargetItem.title}</div>
+              <div className="text-[11px] text-zinc-500">ID: {deleteTargetItem.id}</div>
+            </div>
+
+            {deleteError && (
+              <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-400 text-xs flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 shrink-0" />
+                <span>{deleteError}</span>
+              </div>
+            )}
+
+            <div className="flex items-center justify-end gap-3 pt-2">
+              <button
+                type="button"
+                disabled={isDeleting}
+                onClick={() => {
+                  setDeleteTargetItem(null);
+                  setDeleteError(null);
+                }}
+                className="px-4 py-2.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-semibold transition disabled:opacity-50"
+              >
+                Cancel
+              </button>
+
+              <button
+                type="button"
+                disabled={isDeleting}
+                onClick={confirmDeleteAction}
+                className="px-5 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold transition flex items-center gap-2 shadow-lg shadow-rose-900/30 disabled:opacity-50"
+              >
+                {isDeleting ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    <span>Deleting...</span>
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Delete</span>
+                  </>
+                )}
+              </button>
+            </div>
           </div>
         </div>
       )}

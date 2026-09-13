@@ -1,10 +1,16 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
 import { getFirestore, doc, getDocFromServer } from 'firebase/firestore';
+import { getStorage } from 'firebase/storage';
 import firebaseConfig from '../../firebase-applet-config.json';
 
 const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
 export const auth = getAuth(app);
+
+// Initialize Firebase Storage with configured production bucket
+export const storage = firebaseConfig.storageBucket
+  ? getStorage(app, `gs://${firebaseConfig.storageBucket}`)
+  : getStorage(app);
 
 // Support custom firestoreDatabaseId if specified in config
 export const db = firebaseConfig.firestoreDatabaseId && firebaseConfig.firestoreDatabaseId !== '(default)'
