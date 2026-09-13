@@ -5,6 +5,8 @@ import {
 import { useApp } from '../context/AppContext';
 import { PiFlixLogo } from './PiFlixLogo';
 import { UserAvatar } from './UserAvatar';
+import { AppNotification } from '../types';
+import { formatNotificationTime } from '../lib/firebaseNotifications';
 
 export const Navbar: React.FC = () => {
   const {
@@ -18,6 +20,9 @@ export const Navbar: React.FC = () => {
     notifications,
     unreadNotifsCount,
     markNotificationsRead,
+    movies,
+    seriesList,
+    openDetails,
     openPiPayment,
     searchQuery,
     setSearchQuery,
@@ -31,6 +36,43 @@ export const Navbar: React.FC = () => {
   const [showProfileMenu, setShowProfileMenu] = useState(false);
 
   const isDark = theme === 'dark';
+
+  const handleNotificationClick = async (notif: AppNotification) => {
+    setShowNotifMenu(false);
+
+    // 1. Mark as read in Firestore
+    if (!notif.read) {
+      await markNotificationsRead(notif.id);
+    }
+
+    // 2. Navigate directly to target
+    if (notif.type === 'premium' || notif.targetTab === 'premium') {
+      setActiveTab('premium');
+    } else if (notif.contentId) {
+      const isSeries = notif.contentType === 'series' || notif.type === 'new_series';
+      const existingItem = isSeries
+        ? seriesList.find(s => s.id === notif.contentId)
+        : movies.find(m => m.id === notif.contentId);
+
+      if (existingItem) {
+        openDetails(existingItem, isSeries ? 'series' : 'movie');
+      } else {
+        try {
+          const res = await fetch(`/api/content/${notif.contentId}`);
+          if (res.ok) {
+            const data = await res.json();
+            openDetails(data, isSeries ? 'series' : 'movie');
+          } else {
+            setActiveTab(isSeries ? 'series' : 'movies');
+          }
+        } catch {
+          setActiveTab(isSeries ? 'series' : 'movies');
+        }
+      }
+    } else if (notif.targetTab) {
+      setActiveTab(notif.targetTab as any);
+    }
+  };
 
   return (
     <header className={`sticky top-0 z-40 w-full backdrop-blur-md border-b transition-colors duration-200 ${
@@ -136,10 +178,7 @@ export const Navbar: React.FC = () => {
           {/* Notifications Trigger */}
           <div className="relative">
             <button
-              onClick={() => {
-                setShowNotifMenu(prev => !prev);
-                if (unreadNotifsCount > 0) markNotificationsRead();
-              }}
+              onClick={() => setShowNotifMenu(prev => !prev)}
               className={`p-2 rounded-xl transition relative ${
                 isDark ? 'text-zinc-400 hover:text-white hover:bg-zinc-800' : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
               }`}
@@ -147,44 +186,132 @@ export const Navbar: React.FC = () => {
             >
               <Bell className="w-4 h-4" />
               {unreadNotifsCount > 0 && (
-                <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-pink-500 animate-pulse" />
+                <span className="absolute -top-1 -right-1 min-w-4 h-4 px-1 rounded-full bg-pink-500 text-white text-[9px] font-black flex items-center justify-center shadow-xs animate-pulse">
+                  {unreadNotifsCount > 9 ? '9+' : unreadNotifsCount}
+                </span>
               )}
             </button>
 
-            {/* Notifications Menu */}
+            {/* Backdrop to dismiss on outside click */}
             {showNotifMenu && (
-              <div className={`absolute right-0 top-12 w-80 backdrop-blur-xl rounded-2xl shadow-2xl p-4 z-50 text-xs space-y-3 border ${
-                isDark ? 'bg-zinc-900/95 border-zinc-800 text-white' : 'bg-white border-slate-200 text-slate-900 shadow-xl'
-              }`}>
+              <div
+                className="fixed inset-0 z-40 bg-black/20 backdrop-blur-[1px] sm:bg-transparent"
+                onClick={() => setShowNotifMenu(false)}
+                aria-hidden="true"
+              />
+            )}
+
+            {/* Notifications Menu (Requirement 11: responsive sizing, positioning, scrolling) */}
+            {showNotifMenu && (
+              <div
+                id="notification-dropdown-panel"
+                className={`fixed sm:absolute top-16 sm:top-12 left-3 right-3 sm:left-auto sm:right-0 sm:w-88 max-w-[calc(100vw-1.5rem)] sm:max-w-sm backdrop-blur-xl rounded-2xl shadow-2xl p-3.5 z-50 text-xs space-y-2.5 border transition-all ${
+                  isDark
+                    ? 'bg-zinc-900/95 border-zinc-800 text-white shadow-black/80'
+                    : 'bg-white/95 border-slate-200 text-slate-900 shadow-xl'
+                }`}
+              >
                 <div className={`flex items-center justify-between pb-2 border-b ${isDark ? 'border-zinc-800' : 'border-slate-200'}`}>
-                  <span className="font-bold">Notifications</span>
-                  <button
-                    onClick={() => markNotificationsRead()}
-                    className="text-[11px] text-purple-600 hover:underline"
-                  >
-                    Mark all read
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <span className="font-bold text-sm">Notifications</span>
+                    {unreadNotifsCount > 0 && (
+                      <span className="px-1.5 py-0.5 text-[10px] font-bold rounded-full bg-pink-500/20 text-pink-400 border border-pink-500/30">
+                        {unreadNotifsCount} new
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {unreadNotifsCount > 0 && (
+                      <button
+                        onClick={() => markNotificationsRead()}
+                        className="text-[11px] text-purple-400 hover:text-purple-300 font-semibold hover:underline transition"
+                      >
+                        Mark all read
+                      </button>
+                    )}
+                    <button
+                      onClick={() => setShowNotifMenu(false)}
+                      className={`p-1 rounded-lg transition ${
+                        isDark
+                          ? 'text-zinc-400 hover:text-white hover:bg-zinc-800'
+                          : 'text-slate-400 hover:text-slate-700 hover:bg-slate-100'
+                      }`}
+                      title="Close notifications"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
                 </div>
 
-                <div className="space-y-2 max-h-72 overflow-y-auto">
+                <div className="space-y-2 max-h-[65vh] sm:max-h-80 overflow-y-auto pr-0.5 overscroll-contain">
                   {notifications.length === 0 ? (
-                    <p className={`text-center py-4 ${isDark ? 'text-zinc-500' : 'text-slate-400'}`}>No notifications yet</p>
+                    <div className={`text-center py-8 space-y-2 ${isDark ? 'text-zinc-500' : 'text-slate-400'}`}>
+                      <Bell className="w-7 h-7 mx-auto opacity-30" />
+                      <p className="text-xs">No notifications yet</p>
+                    </div>
                   ) : (
                     notifications.map(n => (
                       <div
                         key={n.id}
-                        className={`p-2.5 rounded-xl border transition ${
+                        id={`notif-${n.id}`}
+                        onClick={() => handleNotificationClick(n)}
+                        className={`p-2.5 rounded-xl border transition cursor-pointer flex items-start gap-2.5 group relative ${
                           n.read
                             ? isDark
-                              ? 'bg-zinc-950/40 border-zinc-800/40 text-zinc-400'
-                              : 'bg-slate-50 border-slate-200 text-slate-600'
+                              ? 'bg-zinc-950/40 border-zinc-800/40 text-zinc-400 hover:bg-zinc-900/60'
+                              : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100/70'
                             : isDark
-                            ? 'bg-purple-950/30 border-purple-800/40 text-white'
-                            : 'bg-purple-50 border-purple-200 text-purple-900'
+                            ? 'bg-purple-950/30 border-purple-800/40 text-white hover:bg-purple-900/40 shadow-xs'
+                            : 'bg-purple-50 border-purple-200 text-purple-900 hover:bg-purple-100/60 shadow-xs'
                         }`}
                       >
-                        <div className="font-bold text-xs">{n.title}</div>
-                        <div className={`text-[11px] mt-0.5 ${isDark ? 'text-zinc-400' : 'text-slate-500'}`}>{n.message}</div>
+                        {/* Cover image or type icon */}
+                        {n.coverImageUrl ? (
+                          <img
+                            src={n.coverImageUrl}
+                            alt=""
+                            className="w-10 h-10 rounded-lg object-cover shrink-0 border border-purple-500/20 bg-zinc-900"
+                            onError={(e) => {
+                              (e.target as HTMLElement).style.display = 'none';
+                            }}
+                          />
+                        ) : (
+                          <div
+                            className={`w-9 h-9 rounded-lg shrink-0 flex items-center justify-center ${
+                              n.type === 'premium'
+                                ? 'bg-amber-500/20 text-amber-400'
+                                : n.type === 'new_series'
+                                ? 'bg-sky-500/20 text-sky-400'
+                                : 'bg-purple-500/20 text-purple-400'
+                            }`}
+                          >
+                            {n.type === 'premium' ? (
+                              <Sparkles className="w-4 h-4" />
+                            ) : n.type === 'new_series' ? (
+                              <Tv className="w-4 h-4" />
+                            ) : (
+                              <Film className="w-4 h-4" />
+                            )}
+                          </div>
+                        )}
+
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center justify-between gap-1.5">
+                            <span className="font-bold text-xs truncate">{n.title}</span>
+                            {!n.read && (
+                              <span className="w-2 h-2 rounded-full bg-pink-500 shrink-0" title="Unread" />
+                            )}
+                          </div>
+                          <p className={`text-[11px] mt-0.5 break-words line-clamp-2 leading-relaxed ${isDark ? 'text-zinc-400' : 'text-slate-600'}`}>
+                            {n.message}
+                          </p>
+                          <div className="flex items-center justify-between mt-1.5 text-[10px] opacity-65">
+                            <span>{formatNotificationTime(n.createdAt)}</span>
+                            <span className="text-[10px] group-hover:underline text-purple-400 font-medium">
+                              {n.type === 'premium' ? 'View VIP' : 'Open details →'}
+                            </span>
+                          </div>
+                        </div>
                       </div>
                     ))
                   )}

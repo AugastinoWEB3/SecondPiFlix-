@@ -221,13 +221,23 @@ export interface AppSettings {
 
 export interface AppNotification {
   id: string;
-  userId: string; // 'all' or specific user
+  userId: string; // 'all' or specific user id
   title: string;
   message: string;
-  type: 'new_movie' | 'new_episode' | 'premium' | 'announcement';
+  type: 'new_movie' | 'new_series' | 'new_episode' | 'premium' | 'announcement';
   contentId?: string;
+  contentType?: 'movie' | 'series';
+  coverImageUrl?: string;
+  targetTab?: 'movies' | 'series' | 'premium' | 'home';
   createdAt: string;
   read: boolean;
+  readBy?: string[];
+  metadata?: {
+    plan?: string;
+    duration?: string;
+    amount?: number;
+    [key: string]: any;
+  };
 }
 
 export interface AdData {

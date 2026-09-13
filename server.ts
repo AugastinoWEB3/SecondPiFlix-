@@ -2113,16 +2113,53 @@ app.post('/api/ads/impression', (req: Request, res: Response) => {
 
 // Notifications
 app.get('/api/notifications', (req: Request, res: Response) => {
+  const queryUserId = req.query.userId as string | undefined;
+  if (queryUserId) {
+    const userNotifs = notifications
+      .filter(n => n.userId === 'all' || n.userId === queryUserId)
+      .map(n => {
+        const readByList = Array.isArray(n.readBy) ? n.readBy : [];
+        const isRead = n.userId === queryUserId ? (n.read || readByList.includes(queryUserId)) : readByList.includes(queryUserId);
+        return { ...n, read: Boolean(isRead) };
+      });
+    return res.json(userNotifs);
+  }
   res.json(notifications);
 });
 
+app.post('/api/notifications', (req: Request, res: Response) => {
+  const newNotif = req.body;
+  if (!newNotif || !newNotif.title) {
+    return res.status(400).json({ error: 'Title required' });
+  }
+  const existingIdx = notifications.findIndex(n => n.id === newNotif.id);
+  if (existingIdx >= 0) {
+    notifications[existingIdx] = { ...notifications[existingIdx], ...newNotif };
+  } else {
+    notifications.unshift(newNotif);
+  }
+  res.json({ success: true, notification: newNotif });
+});
+
 app.post('/api/notifications/read', (req: Request, res: Response) => {
-  const { id } = req.body;
+  const { id, userId } = req.body;
   if (id) {
     const notif = notifications.find(n => n.id === id);
-    if (notif) notif.read = true;
+    if (notif) {
+      notif.read = true;
+      if (userId) {
+        if (!Array.isArray(notif.readBy)) notif.readBy = [];
+        if (!notif.readBy.includes(userId)) notif.readBy.push(userId);
+      }
+    }
   } else {
-    notifications.forEach(n => (n.read = true));
+    notifications.forEach(n => {
+      n.read = true;
+      if (userId) {
+        if (!Array.isArray(n.readBy)) n.readBy = [];
+        if (!n.readBy.includes(userId)) n.readBy.push(userId);
+      }
+    });
   }
   res.json({ success: true });
 });
@@ -2332,15 +2369,22 @@ app.post(['/api/pi/payments/complete', '/api/pi/complete-payment'], async (req: 
       user.subscriptionExpiry = expiry.toISOString();
     }
 
-    // Send celebration notification to user
+    // Send confirmation notification to user (Requirement 4)
     notifications.unshift({
-      id: 'notif-' + Date.now(),
+      id: 'notif_vip_' + (user ? user.id : targetUserId) + '_' + Date.now(),
       userId: user ? user.id : (targetUserId || 'usr_demo'),
-      title: '⭐ Welcome to PiFlix+ VIP Pioneer!',
-      message: `Your ${selectedPlan} subscription of ${amountPaid} Pi has been verified on the blockchain. Ad-free 4K streaming is now unlocked!`,
+      title: '⭐ Premium Activated',
+      message: 'Your PiFlix+ Premium membership has been successfully activated.',
       type: 'premium',
+      targetTab: 'premium',
       createdAt: new Date().toISOString(),
-      read: false
+      read: false,
+      readBy: [],
+      metadata: {
+        plan: selectedPlan === 'annual' ? 'Annual VIP' : 'Monthly VIP',
+        duration: selectedPlan === 'annual' ? '1 Year' : '1 Month',
+        amount: amountPaid
+      }
     });
 
     return res.json({

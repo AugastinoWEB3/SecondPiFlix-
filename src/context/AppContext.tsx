@@ -2,6 +2,7 @@ import React, { createContext, useContext, useState, useEffect } from 'react';
 import { Movie, TVSeries, Episode, User, AppSettings, WatchHistoryItem, WatchlistItem, LikedItem, AppNotification, ContentType, ContentItem } from '../types';
 import { initialSettings, defaultUsers } from '../data/mockData';
 import { subscribeToContent, fetchSettingsFromFirestore, saveSettingsToFirestore, subscribeToSettings } from '../lib/firebaseContent';
+import { subscribeToUserNotifications, markNotificationAsRead, markAllNotificationsAsRead, createNotification } from '../lib/firebaseNotifications';
 import { auth } from '../lib/firebase';
 import { onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
 import { loginAdminWithEmail, loginAdminWithGoogle, registerAdminAccount, logoutAdminUser, verifyTokenWithBackend } from '../lib/firebaseAuth';
@@ -471,6 +472,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     refreshContent();
   }, [currentUser.id]);
 
+  // Real-time Firestore Notifications sync: Persistent across page reloads and devices
+  useEffect(() => {
+    const unsubscribe = subscribeToUserNotifications(currentUser.id, (userNotifs) => {
+      setNotifications(userNotifs);
+    });
+    return () => unsubscribe();
+  }, [currentUser.id]);
+
   const toggleTheme = () => {
     setTheme(prev => (prev === 'dark' ? 'light' : 'dark'));
   };
@@ -677,15 +686,31 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const markNotificationsRead = async (id?: string) => {
     try {
-      await fetch('/api/notifications/read', {
+      if (id) {
+        const success = await markNotificationAsRead(id, currentUser.id);
+        if (success) {
+          setNotifications(prev =>
+            prev.map(n => (n.id === id ? { ...n, read: true } : n))
+          );
+        }
+      } else {
+        const success = await markAllNotificationsAsRead(notifications, currentUser.id);
+        if (success) {
+          setNotifications(prev =>
+            prev.map(n => ({ ...n, read: true }))
+          );
+        }
+      }
+
+      // Background sync to server endpoint
+      fetch('/api/notifications/read', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id })
-      });
-      setNotifications(prev =>
-        prev.map(n => (id ? (n.id === id ? { ...n, read: true } : n) : { ...n, read: true }))
-      );
-    } catch (e) {}
+        body: JSON.stringify({ id, userId: currentUser.id })
+      }).catch(() => {});
+    } catch (e) {
+      console.error('[Notifications] Failed marking as read:', e);
+    }
   };
 
   const openPiPayment = (plan: 'monthly' | 'annual' = 'monthly') => {
@@ -697,10 +722,33 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setIsPiPaymentOpen(false);
   };
 
-  const onPaymentSuccess = (updatedUser: User) => {
+  const onPaymentSuccess = async (updatedUser: User) => {
     setCurrentUser(updatedUser);
     setIsPiPaymentOpen(false);
     refreshContent();
+
+    // Create confirmation notification in Firestore (Requirement 4)
+    try {
+      const planName = selectedPlanForPayment === 'annual' ? 'Annual VIP' : 'Monthly VIP';
+      const duration = selectedPlanForPayment === 'annual' ? '1 Year' : '1 Month';
+      await createNotification({
+        id: `notif_vip_${updatedUser.id}_${Date.now()}`,
+        userId: updatedUser.id,
+        title: '⭐ Premium Activated',
+        message: 'Your PiFlix+ Premium membership has been successfully activated.',
+        type: 'premium',
+        targetTab: 'premium',
+        createdAt: new Date().toISOString(),
+        read: false,
+        readBy: [],
+        metadata: {
+          plan: planName,
+          duration: duration
+        }
+      });
+    } catch (err) {
+      console.error('[Notifications] Failed creating VIP notification in Firestore:', err);
+    }
   };
 
   const unreadNotifsCount = notifications.filter(n => !n.read).length;

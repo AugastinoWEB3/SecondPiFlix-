@@ -89,5 +89,13 @@ service cloud.firestore {
       allow read: if true;
       allow write: if false;
     }
+
+    // Notifications collection (broadcast content releases and user-specific notifications)
+    match /notifications/{notificationId} {
+      allow read: if true;
+      allow create: if true;
+      allow update: if true;
+      allow delete: if isAdmin();
+    }
   }
 }

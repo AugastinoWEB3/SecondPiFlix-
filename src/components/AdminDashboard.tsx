@@ -8,6 +8,7 @@ import {
 import { useApp } from '../context/AppContext';
 import { ContentItem, Movie, TVSeries, User } from '../types';
 import { saveContent, deleteContent, setPublishedState, cleanExistingInvalidMedia } from '../lib/firebaseContent';
+import { createNotification } from '../lib/firebaseNotifications';
 import { uploadMediaToStorage, deleteMediaFromStorage } from '../lib/firebaseStorage';
 import { UserAvatar } from './UserAvatar';
 
@@ -490,6 +491,30 @@ export const AdminDashboard: React.FC = () => {
           : `Saved content draft successfully!`
       );
 
+      // Create persistent notification in Firestore when item is published (Requirements 2 & 3)
+      if (itemToSave.published) {
+        const isSeries = itemToSave.type === 'series';
+        const notifTitle = isSeries ? '📺 New Series' : '🎬 New Movie Release';
+        const notifMsg = isSeries
+          ? `A new series, ${itemToSave.title}, is now available on PiFlix+.`
+          : `"${itemToSave.title}" is now available on PiFlix+.`;
+
+        createNotification({
+          id: `notif_${itemToSave.type}_${itemToSave.id}`,
+          userId: 'all',
+          title: notifTitle,
+          message: notifMsg,
+          type: isSeries ? 'new_series' : 'new_movie',
+          contentId: itemToSave.id,
+          contentType: isSeries ? 'series' : 'movie',
+          coverImageUrl: itemToSave.coverImageUrl || '',
+          targetTab: isSeries ? 'series' : 'movies',
+          createdAt: new Date().toISOString(),
+          read: false,
+          readBy: []
+        }).catch(err => console.error('[Notifications] Failed creating content release notification:', err));
+      }
+
       // Refresh app public catalog
       await refreshContent();
       await loadAdminData();
@@ -567,6 +592,31 @@ export const AdminDashboard: React.FC = () => {
         },
         body: JSON.stringify({ published: newPublishedState })
       });
+
+      // Create persistent notification in Firestore when toggled to published (Requirements 2 & 3)
+      if (newPublishedState) {
+        const isSeries = 'seasonsCount' in item || (item as any).type === 'series';
+        const notifTitle = isSeries ? '📺 New Series' : '🎬 New Movie Release';
+        const notifMsg = isSeries
+          ? `A new series, ${item.title}, is now available on PiFlix+.`
+          : `"${item.title}" is now available on PiFlix+.`;
+
+        createNotification({
+          id: `notif_${isSeries ? 'series' : 'movie'}_${item.id}`,
+          userId: 'all',
+          title: notifTitle,
+          message: notifMsg,
+          type: isSeries ? 'new_series' : 'new_movie',
+          contentId: item.id,
+          contentType: isSeries ? 'series' : 'movie',
+          coverImageUrl: item.coverImageUrl || item.poster || '',
+          targetTab: isSeries ? 'series' : 'movies',
+          createdAt: new Date().toISOString(),
+          read: false,
+          readBy: []
+        }).catch(err => console.error('[Notifications] Failed creating toggle release notification:', err));
+      }
+
       await refreshContent();
       await loadAdminData();
     } catch (err) {

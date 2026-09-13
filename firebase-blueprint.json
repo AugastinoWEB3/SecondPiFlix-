@@ -64,6 +64,25 @@
         "announcementBanner": { "type": "string", "maxLength": 500 }
       },
       "required": ["appName", "monthlyPricePi", "annualPricePi"]
+    },
+    "notifications": {
+      "title": "Notification",
+      "description": "System release alerts and user notifications",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "maxLength": 100 },
+        "title": { "type": "string", "maxLength": 200 },
+        "message": { "type": "string", "maxLength": 1000 },
+        "type": { "type": "string", "enum": ["new_movie", "new_series", "new_episode", "premium", "announcement"] },
+        "contentId": { "type": "string", "maxLength": 100 },
+        "contentType": { "type": "string", "enum": ["movie", "series"] },
+        "coverImageUrl": { "type": "string", "maxLength": 2000 },
+        "targetTab": { "type": "string", "maxLength": 50 },
+        "createdAt": { "type": "string", "maxLength": 100 },
+        "read": { "type": "boolean" },
+        "readBy": { "type": "array" }
+      },
+      "required": ["userId", "title", "message", "type", "createdAt", "read"]
     }
   },
   "firestore": {
@@ -78,6 +97,10 @@
     "/settings/{settingId}": {
       "schema": "settings",
       "description": "Global application configuration documents"
+    },
+    "/notifications/{notificationId}": {
+      "schema": "notifications",
+      "description": "Public release announcements and user notifications"
     }
   }
 }
