@@ -3,7 +3,8 @@ import {
   Film, Tv, Users, DollarSign, Eye, Clock, BarChart3, Plus, Edit2, Trash2,
   Save, Sparkles, Sliders, ShieldCheck, CheckCircle2, AlertTriangle, Search,
   Radio, Layers, Check, X, RefreshCw, Upload, Play, Lock, Unlock,
-  Image as ImageIcon, FileVideo, Filter, ExternalLink, LogOut, KeyRound, ArrowUpDown
+  Image as ImageIcon, FileVideo, Filter, ExternalLink, LogOut, KeyRound, ArrowUpDown,
+  Mail
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { ContentItem, Movie, TVSeries, User } from '../types';
@@ -11,6 +12,8 @@ import { saveContent, deleteContent, setPublishedState, cleanExistingInvalidMedi
 import { createNotification } from '../lib/firebaseNotifications';
 import { uploadMediaToStorage, deleteMediaFromStorage } from '../lib/firebaseStorage';
 import { UserAvatar } from './UserAvatar';
+import { AdminSupportInbox } from './AdminSupportInbox';
+import { fetchSupportStatus } from '../lib/supportEmailApi';
 
 interface EpisodeFormItem {
   id?: string;
@@ -59,7 +62,8 @@ export const AdminDashboard: React.FC = () => {
   const [isGoogleAuthenticating, setIsGoogleAuthenticating] = useState(false);
 
   // Admin Dashboard views
-  const [adminSection, setAdminSection] = useState<'content' | 'overview' | 'users' | 'settings' | 'admins'>('content');
+  const [adminSection, setAdminSection] = useState<'content' | 'overview' | 'users' | 'support' | 'settings' | 'admins'>('content');
+  const [supportUnreadCount, setSupportUnreadCount] = useState<number>(0);
   const [overviewStats, setOverviewStats] = useState<any>(null);
   const [usersList, setUsersList] = useState<User[]>([]);
   const [adminsList, setAdminsList] = useState<any[]>([]);
@@ -121,7 +125,7 @@ export const AdminDashboard: React.FC = () => {
   const loadAdminData = async () => {
     setLoading(true);
     try {
-      const [ovRes, usrRes, admRes] = await Promise.all([
+      const [ovRes, usrRes, admRes, supportStatus] = await Promise.all([
         fetch('/api/admin/overview', {
           headers: adminToken ? { Authorization: `Bearer ${adminToken}` } : {}
         }).then(r => r.json()).catch(() => null),
@@ -130,11 +134,15 @@ export const AdminDashboard: React.FC = () => {
         }).then(r => r.json()).catch(() => []),
         fetch('/api/admin/admins', {
           headers: adminToken ? { Authorization: `Bearer ${adminToken}` } : {}
-        }).then(r => r.json()).catch(() => [])
+        }).then(r => r.json()).catch(() => []),
+        fetchSupportStatus(adminToken).catch(() => null)
       ]);
       if (ovRes) setOverviewStats(ovRes);
       if (Array.isArray(usrRes)) setUsersList(usrRes);
       if (Array.isArray(admRes)) setAdminsList(admRes);
+      if (supportStatus && typeof supportStatus.unreadMessages === 'number') {
+        setSupportUnreadCount(supportStatus.unreadMessages);
+      }
     } catch (e) {
       console.error('Error loading admin data', e);
     } finally {
@@ -942,6 +950,23 @@ export const AdminDashboard: React.FC = () => {
         </button>
 
         <button
+          onClick={() => setAdminSection('support')}
+          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition shrink-0 ${
+            adminSection === 'support'
+              ? 'bg-purple-600 text-white shadow-md shadow-purple-900/40'
+              : 'text-zinc-400 hover:text-white hover:bg-zinc-900'
+          }`}
+        >
+          <Mail className="w-4 h-4" />
+          <span>Support Inbox</span>
+          {supportUnreadCount > 0 && (
+            <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-pink-500 text-white font-black animate-pulse">
+              {supportUnreadCount}
+            </span>
+          )}
+        </button>
+
+        <button
           onClick={() => setAdminSection('admins')}
           className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition shrink-0 ${
             adminSection === 'admins'
@@ -1596,6 +1621,16 @@ export const AdminDashboard: React.FC = () => {
             </div>
           </div>
         </div>
+      )}
+
+      {/* ---------------------------------------------------------------------- */}
+      {/* TAB 6: SUPPORT INBOX (support@piflixplus.network)                      */}
+      {/* ---------------------------------------------------------------------- */}
+      {adminSection === 'support' && (
+        <AdminSupportInbox
+          adminToken={adminToken}
+          currentUserEmail={currentUser.email || 'admin@piflixplus.network'}
+        />
       )}
 
       {/* ---------------------------------------------------------------------- */}

@@ -78,31 +78,31 @@ export const Navbar: React.FC = () => {
     <header className={`sticky top-0 z-40 w-full backdrop-blur-md border-b transition-colors duration-200 ${
       isDark ? 'bg-[#0c0d14]/90 border-zinc-800/80 text-white' : 'bg-white/90 border-slate-200 text-slate-900 shadow-xs'
     }`}>
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-4">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-3 sm:gap-4">
         {/* Left: Brand Logo & Desktop Nav Links */}
-        <div className="flex items-center gap-8">
+        <div className="flex items-center gap-3 md:gap-4 lg:gap-6 xl:gap-8 min-w-0 shrink">
           <div
             onClick={() => setActiveTab('home')}
-            className="cursor-pointer transition hover:opacity-90"
+            className="cursor-pointer transition hover:opacity-90 shrink-0"
           >
             <PiFlixLogo size="md" />
           </div>
 
           {/* Desktop Navigation Links */}
-          <nav className="hidden md:flex items-center gap-1.5 text-xs font-semibold">
+          <nav className="hidden md:flex items-center gap-1 lg:gap-1.5 text-xs font-semibold shrink-0">
             {[
               { id: 'home', label: 'Home' },
               { id: 'movies', label: 'Movies' },
               { id: 'series', label: 'TV Series' },
               { id: 'trending', label: 'Trending' },
-              { id: 'watchlist', label: 'My Watchlist' }
+              { id: 'watchlist', label: 'Watchlist' }
             ].map(item => {
               const isActive = activeTab === item.id;
               return (
                 <button
                   key={item.id}
                   onClick={() => setActiveTab(item.id as any)}
-                  className={`px-3 py-1.5 rounded-lg transition ${
+                  className={`px-2.5 lg:px-3 py-1.5 rounded-lg whitespace-nowrap transition ${
                     isActive
                       ? isDark
                         ? 'text-white bg-purple-600/30 border border-purple-500/40'
@@ -120,7 +120,7 @@ export const Navbar: React.FC = () => {
             {/* Premium VIP Link */}
             <button
               onClick={() => setActiveTab('premium')}
-              className={`px-3 py-1.5 rounded-lg font-bold transition flex items-center gap-1.5 ${
+              className={`px-2.5 lg:px-3 py-1.5 rounded-lg font-bold whitespace-nowrap transition flex items-center gap-1.5 ${
                 activeTab === 'premium'
                   ? 'bg-gradient-to-r from-amber-500 to-rose-500 text-black shadow'
                   : isDark
@@ -135,9 +135,9 @@ export const Navbar: React.FC = () => {
         </div>
 
         {/* Right Controls: Search, Notifications, Theme, Profile */}
-        <div className="flex items-center gap-2 sm:gap-3">
+        <div className="flex items-center gap-1.5 sm:gap-2 lg:gap-3 shrink-0">
           {/* Quick Search Input */}
-          <div className="relative hidden sm:block w-44 lg:w-60">
+          <div className="relative hidden md:block w-36 lg:w-52 xl:w-60">
             <Search className={`w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none ${
               isDark ? 'text-zinc-400' : 'text-slate-400'
             }`} />
@@ -336,23 +336,13 @@ export const Navbar: React.FC = () => {
             )}
           </button>
 
-          {/* Manual Pi Authentication Trigger Button */}
+          {/* Manual Pi Authentication Trigger Button (Only shown when not signed in with Pi) */}
           <div className="relative">
-            {currentUser.piUsername ? (
-              <div
-                className={`hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold border transition ${
-                  isDark ? 'bg-purple-950/40 border-purple-500/40 text-purple-300' : 'bg-purple-50 border-purple-200 text-purple-800'
-                }`}
-                title={`Authenticated Pi Pioneer: @${currentUser.piUsername}`}
-              >
-                <span className="font-serif text-amber-400 font-extrabold text-xs">π</span>
-                <span className="truncate max-w-[100px]">@{currentUser.piUsername}</span>
-              </div>
-            ) : (
+            {!currentUser.piUsername && (
               <button
                 onClick={() => signInWithPi(false)}
                 disabled={isPiAuthenticating}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold bg-gradient-to-r from-amber-500 to-purple-600 hover:from-amber-400 hover:to-purple-500 text-white shadow-xs transition transform active:scale-95 disabled:opacity-60 cursor-pointer"
+                className="flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-full text-xs font-bold bg-gradient-to-r from-amber-500 to-purple-600 hover:from-amber-400 hover:to-purple-500 text-white shadow-xs transition transform active:scale-95 disabled:opacity-60 cursor-pointer shrink-0"
                 title="Sign in with your Pi Network account"
               >
                 {isPiAuthenticating ? (
@@ -360,7 +350,7 @@ export const Navbar: React.FC = () => {
                 ) : (
                   <span className="font-serif font-black text-amber-200 text-sm leading-none">π</span>
                 )}
-                <span className="hidden xs:inline">{isPiAuthenticating ? 'Connecting...' : 'Sign in with Pi'}</span>
+                <span className="hidden sm:inline">{isPiAuthenticating ? 'Connecting...' : 'Sign in with Pi'}</span>
               </button>
             )}
 

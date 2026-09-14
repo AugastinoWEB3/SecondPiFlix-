@@ -43,7 +43,7 @@ const MainAppContent: React.FC = () => {
   const isDark = theme === 'dark';
 
   return (
-    <div className={`min-h-screen ${isDark ? 'bg-[#0a0b12] text-zinc-100' : 'bg-[#f8fafc] text-slate-900'} flex flex-col font-['Plus_Jakarta_Sans'] selection:bg-purple-600 selection:text-white transition-colors duration-200`}>
+    <div className={`min-h-screen w-full overflow-x-hidden ${isDark ? 'bg-[#0a0b12] text-zinc-100' : 'bg-[#f8fafc] text-slate-900'} flex flex-col font-['Plus_Jakarta_Sans'] selection:bg-purple-600 selection:text-white transition-colors duration-200`}>
       {/* Announcement Banner (from Admin settings) */}
       {settings.announcement && (
         <div className="w-full bg-gradient-to-r from-purple-700 via-pink-600 to-rose-600 text-white text-xs font-semibold py-2 px-4 text-center flex items-center justify-center gap-2 shadow-md relative z-40">

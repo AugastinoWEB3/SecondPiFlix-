@@ -9,6 +9,7 @@ import multer from 'multer';
 import { createServer as createViteServer } from 'vite';
 import { initialSettings, defaultUsers, sampleMovies, sampleSeries, sampleSeasons, sampleEpisodes, sampleAds } from './src/data/mockData';
 import { Movie, TVSeries, Season, Episode, User, WatchHistoryItem, WatchlistItem, LikedItem, ContentRatingReview, Subscription, PaymentRecord, AppSettings, AppNotification, ContentItem } from './src/types';
+import { getEmailStatus, getAllMessages, syncMailbox, sendReply, setMessageReadStatus } from './server/supportEmail';
 
 const app = express();
 const PORT = 3000;
@@ -2573,6 +2574,46 @@ app.post('/api/admin/users/:id/toggle-premium', verifyAdmin, (req: Request, res:
   user.premiumStatus = !user.premiumStatus;
   user.subscriptionPlan = user.premiumStatus ? 'monthly' : 'free';
   res.json({ success: true, user });
+});
+
+// --------------------------------------------------------------------------
+// SUPPORT EMAIL INBOX (support@piflixplus.network)
+// --------------------------------------------------------------------------
+app.get('/api/admin/support/status', verifyAdmin, (_req: Request, res: Response) => {
+  res.json(getEmailStatus());
+});
+
+app.get('/api/admin/support/messages', verifyAdmin, (_req: Request, res: Response) => {
+  const messages = getAllMessages();
+  res.json({ success: true, messages, status: getEmailStatus() });
+});
+
+app.post('/api/admin/support/sync', verifyAdmin, async (_req: Request, res: Response) => {
+  const result = await syncMailbox();
+  const messages = getAllMessages();
+  res.json({ ...result, messages, status: getEmailStatus() });
+});
+
+app.post('/api/admin/support/reply', verifyAdmin, async (req: Request, res: Response) => {
+  const { messageId, to, subject, replyBody } = req.body;
+  const adminUser = (req as any).adminUser;
+  const result = await sendReply({
+    messageId,
+    to,
+    subject,
+    replyBody,
+    adminEmail: adminUser?.email || 'admin@piflixplus.network'
+  });
+  if (!result.success) {
+    return res.status(400).json(result);
+  }
+  res.json(result);
+});
+
+app.post('/api/admin/support/mark-read', verifyAdmin, (req: Request, res: Response) => {
+  const { messageId, read } = req.body;
+  const success = setMessageReadStatus(messageId, Boolean(read));
+  res.json({ success, messageId, read });
 });
 
 // Production and Development Vite setup

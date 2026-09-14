@@ -104,7 +104,7 @@ export const Footer: React.FC = () => {
                 </button>
               </li>
               <li className={`text-[11px] ${isDark ? 'text-zinc-400' : 'text-slate-500'}`}>
-                Support: {settings.contactEmail || 'support@piflixplus.com'}
+                Support: {settings.contactEmail || 'support@piflixplus.network'}
               </li>
             </ul>
           </div>
