@@ -1,21 +1,64 @@
 import dotenv from 'dotenv';
 dotenv.config();
+dotenv.config({ path: '.env.local' });
+dotenv.config({ path: '.env.production' });
 
 import express, { Request, Response } from 'express';
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
 import multer from 'multer';
+import { execFile } from 'child_process';
+import util from 'util';
 import { createServer as createViteServer } from 'vite';
 import { initialSettings, defaultUsers, sampleMovies, sampleSeries, sampleSeasons, sampleEpisodes, sampleAds } from './src/data/mockData';
-import { Movie, TVSeries, Season, Episode, User, WatchHistoryItem, WatchlistItem, LikedItem, ContentRatingReview, Subscription, PaymentRecord, AppSettings, AppNotification, ContentItem } from './src/types';
+import { Movie, TVSeries, Season, Episode, User, WatchHistoryItem, WatchlistItem, LikedItem, ContentRatingReview, Subscription, PaymentRecord, AppSettings, AppNotification, ContentItem, VisitorRecord } from './src/types';
 import { getEmailStatus, getAllMessages, syncMailbox, sendReply, setMessageReadStatus } from './server/supportEmail';
+
+const execFilePromise = util.promisify(execFile);
+
+/**
+ * Extract precise media duration using ffprobe.
+ * Works for both local files and remote streaming URLs.
+ */
+async function detectMediaDuration(filePathOrUrl: string): Promise<{ durationSeconds: number; durationMinutes: number } | null> {
+  try {
+    const { stdout } = await execFilePromise('ffprobe', [
+      '-v', 'error',
+      '-show_entries', 'format=duration',
+      '-of', 'default=noprint_wrappers=1:nokey=1',
+      filePathOrUrl
+    ], { timeout: 15000 });
+
+    const durSec = parseFloat(stdout.trim());
+    if (!isNaN(durSec) && durSec > 0) {
+      return {
+        durationSeconds: Math.round(durSec),
+        durationMinutes: Math.max(1, Math.round(durSec / 60))
+      };
+    }
+  } catch (err) {
+    console.warn('[ffprobe] Could not detect duration from media target:', err);
+  }
+  return null;
+}
 
 const app = express();
 const PORT = 3000;
 
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+
+// Enable CORS and handle preflight requests so external Pi Browser and webviews never face cross-origin blocks
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(204);
+  }
+  next();
+});
 
 // Ensure upload directories exist
 const uploadsDir = path.join(process.cwd(), 'public', 'uploads');
@@ -114,6 +157,81 @@ if (fs.existsSync(firebaseConfigFile)) {
     console.warn('Failed to parse firebase-applet-config.json in server:', e);
   }
 }
+
+// Persistent Cover Serving & Cloud Fallback across restarts
+app.get('/uploads/covers/:filename', async (req: Request, res: Response) => {
+  const safeFilename = path.basename(req.params.filename);
+  const filePath = path.join(coversDir, safeFilename);
+
+  if (fs.existsSync(filePath)) {
+    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    return res.sendFile(filePath);
+  }
+
+  // If not on disk (e.g. after container restart), recover from Firestore media_assets
+  try {
+    const cleanId = safeFilename.replace(/\.[^.]+$/, '');
+    const projectId = firebaseConfig.projectId || 'empyrean-patrol-bvxch';
+    const databaseId = firebaseConfig.firestoreDatabaseId || 'ai-studio-piflix-2d1bb7c4-88f0-466a-95d5-c25d95f2c9a6';
+    const docUrl = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/${databaseId}/documents/media_assets/${cleanId}`;
+
+    const fsRes = await fetch(docUrl);
+    if (fsRes.ok) {
+      const docData = await fsRes.json();
+      const base64Data = docData.fields?.data?.stringValue;
+      const mimeType = docData.fields?.mimeType?.stringValue || 'image/jpeg';
+      if (base64Data) {
+        const cleanBase64 = base64Data.replace(/^data:[^;]+;base64,/, '');
+        const buffer = Buffer.from(cleanBase64, 'base64');
+        try { fs.writeFileSync(filePath, buffer); } catch {}
+        res.setHeader('Content-Type', mimeType);
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        return res.send(buffer);
+      }
+    }
+  } catch (recoverErr) {
+    console.warn('[Cover Recovery] Notice:', recoverErr);
+  }
+
+  return res.redirect('https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=800&auto=format&fit=crop&q=80');
+});
+
+// Direct Media Asset Endpoint for persistent cover images
+app.get('/api/media/covers/:assetId', async (req: Request, res: Response) => {
+  const assetId = path.basename(req.params.assetId);
+  const diskPath = path.join(coversDir, `cover_${assetId}.jpg`);
+
+  if (fs.existsSync(diskPath)) {
+    res.setHeader('Content-Type', 'image/jpeg');
+    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    return res.sendFile(diskPath);
+  }
+
+  try {
+    const projectId = firebaseConfig.projectId || 'empyrean-patrol-bvxch';
+    const databaseId = firebaseConfig.firestoreDatabaseId || 'ai-studio-piflix-2d1bb7c4-88f0-466a-95d5-c25d95f2c9a6';
+    const docUrl = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/${databaseId}/documents/media_assets/${assetId}`;
+
+    const fsRes = await fetch(docUrl);
+    if (fsRes.ok) {
+      const docData = await fsRes.json();
+      const base64Data = docData.fields?.data?.stringValue;
+      const mimeType = docData.fields?.mimeType?.stringValue || 'image/jpeg';
+      if (base64Data) {
+        const cleanBase64 = base64Data.replace(/^data:[^;]+;base64,/, '');
+        const buffer = Buffer.from(cleanBase64, 'base64');
+        try { fs.writeFileSync(diskPath, buffer); } catch {}
+        res.setHeader('Content-Type', mimeType);
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        return res.send(buffer);
+      }
+    }
+  } catch (err) {
+    console.warn('[api/media/covers] Notice:', err);
+  }
+
+  return res.redirect('https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=800&auto=format&fit=crop&q=80');
+});
 
 // Designated Primary Super Administrator (Owner)
 const SUPER_ADMIN_EMAIL = 'frank.gwaza.fg@gmail.com';
@@ -381,6 +499,8 @@ const CONTENT_STORE_FILE = path.join(DATA_DIR, 'content_store.json');
 const SETTINGS_STORE_FILE = path.join(DATA_DIR, 'settings_store.json');
 
 // Persistent stores for the server lifecycle
+const INTERACTIONS_STORE_FILE = path.join(DATA_DIR, 'interactions_store.json');
+
 let appSettings: AppSettings = { ...initialSettings };
 let users: User[] = JSON.parse(JSON.stringify(defaultUsers));
 let movies: Movie[] = JSON.parse(JSON.stringify(sampleMovies));
@@ -388,6 +508,141 @@ let seriesList: TVSeries[] = JSON.parse(JSON.stringify(sampleSeries));
 let seasonsList: Season[] = JSON.parse(JSON.stringify(sampleSeasons));
 let episodesList: Episode[] = JSON.parse(JSON.stringify(sampleEpisodes));
 let deletedContentIds: Set<string> = new Set();
+
+let watchHistory: WatchHistoryItem[] = [
+  {
+    id: 'wh-1',
+    userId: 'usr_demo',
+    contentId: 'm-tears-of-steel',
+    contentType: 'movie',
+    progressSeconds: 180,
+    durationSeconds: 720,
+    completionPercentage: 25,
+    lastWatched: new Date(Date.now() - 3600000).toISOString()
+  },
+  {
+    id: 'wh-2',
+    userId: 'usr_demo',
+    contentId: 's-pi-syndicate',
+    contentType: 'series',
+    episodeId: 'ep-pi-101',
+    progressSeconds: 950,
+    durationSeconds: 2880,
+    completionPercentage: 33,
+    lastWatched: new Date(Date.now() - 86400000).toISOString()
+  }
+];
+
+let watchlist: WatchlistItem[] = [
+  { id: 'wl-1', userId: 'usr_demo', contentId: 'm-lagos-shadows', contentType: 'movie', addedAt: new Date().toISOString() },
+  { id: 'wl-2', userId: 'usr_demo', contentId: 's-nairobi-dynasty', contentType: 'series', addedAt: new Date().toISOString() }
+];
+
+let likedItems: LikedItem[] = [
+  { id: 'lk-1', userId: 'usr_demo', contentId: 'm-serengeti-whispers', contentType: 'movie', likedAt: new Date().toISOString() }
+];
+
+let reviews: ContentRatingReview[] = [
+  {
+    id: 'rev-1',
+    userId: 'usr_demo',
+    username: 'PiPioneer_Alex',
+    userImage: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&auto=format&fit=crop&q=80',
+    contentId: 'm-tears-of-steel',
+    rating: 9,
+    review: 'Phenomenal sci-fi VFX and futuristic atmosphere! Streamed smoothly without lag on PiFlix+.',
+    createdAt: new Date(Date.now() - 43200000).toISOString(),
+    approved: true
+  },
+  {
+    id: 'rev-2',
+    userId: 'usr_admin',
+    username: 'piflix_admin',
+    userImage: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
+    contentId: 'm-lagos-shadows',
+    rating: 10,
+    review: 'Nollywood masterpiece! Top tier storytelling and sound design.',
+    createdAt: new Date(Date.now() - 12000000).toISOString(),
+    approved: true
+  }
+];
+
+function loadInteractionsStore() {
+  try {
+    if (fs.existsSync(INTERACTIONS_STORE_FILE)) {
+      const data = JSON.parse(fs.readFileSync(INTERACTIONS_STORE_FILE, 'utf-8'));
+      if (Array.isArray(data.likedItems)) {
+        likedItems = data.likedItems;
+      }
+      if (Array.isArray(data.reviews)) {
+        reviews = data.reviews;
+      }
+      if (Array.isArray(data.watchlist)) {
+        watchlist = data.watchlist;
+      }
+      if (Array.isArray(data.watchHistory)) {
+        watchHistory = data.watchHistory;
+      }
+      console.info(`[InteractionsStore] Loaded ${likedItems.length} likes and ${reviews.length} reviews.`);
+      return;
+    }
+  } catch (err) {
+    console.warn('Failed to load interactions_store.json:', err);
+  }
+  saveInteractionsStore();
+}
+
+function saveInteractionsStore() {
+  try {
+    fs.writeFileSync(INTERACTIONS_STORE_FILE, JSON.stringify({
+      likedItems,
+      reviews,
+      watchlist,
+      watchHistory
+    }, null, 2), 'utf-8');
+  } catch (err) {
+    console.error('Failed to save interactions_store.json:', err);
+  }
+}
+
+function recalculateAllMetrics() {
+  let changed = false;
+  for (const m of movies) {
+    const mRatings = reviews.filter(r => r.contentId === m.id && typeof r.rating === 'number').map(r => r.rating);
+    if (mRatings.length > 0) {
+      const newRating = Number((mRatings.reduce((a, b) => a + b, 0) / mRatings.length).toFixed(1));
+      if (m.rating !== newRating) {
+        m.rating = newRating;
+        changed = true;
+      }
+    }
+    const newLikes = likedItems.filter(l => l.contentId === m.id).length;
+    if (m.likesCount !== newLikes) {
+      m.likesCount = newLikes;
+      changed = true;
+    }
+  }
+
+  for (const s of seriesList) {
+    const sRatings = reviews.filter(r => r.contentId === s.id && typeof r.rating === 'number').map(r => r.rating);
+    if (sRatings.length > 0) {
+      const newRating = Number((sRatings.reduce((a, b) => a + b, 0) / sRatings.length).toFixed(1));
+      if (s.rating !== newRating) {
+        s.rating = newRating;
+        changed = true;
+      }
+    }
+    const newLikes = likedItems.filter(l => l.contentId === s.id).length;
+    if (s.likesCount !== newLikes) {
+      s.likesCount = newLikes;
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    saveContentStore();
+  }
+}
 
 function loadSettingsStore(): AppSettings {
   try {
@@ -452,29 +707,390 @@ function saveContentStore() {
   }
 }
 
+// --------------------------------------------------------------------------
+// VISITOR ANALYTICS PERSISTENT STORE & FIRESTORE SYNCHRONIZATION
+// --------------------------------------------------------------------------
+const VISITORS_STORE_FILE = path.join(DATA_DIR, 'visitors_store.json');
+const visitorsStore = new Map<string, VisitorRecord>();
+
+function getFormattedDate(d = new Date()): string {
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function getWeekDates(d = new Date()): Set<string> {
+  const dates = new Set<string>();
+  const current = new Date(d);
+  const dayOfWeek = current.getDay(); // 0 is Sunday, 1 is Monday ... 6 is Saturday
+  const sunday = new Date(current);
+  sunday.setDate(current.getDate() - dayOfWeek);
+
+  for (let i = 0; i < 7; i++) {
+    const nextDay = new Date(sunday);
+    nextDay.setDate(sunday.getDate() + i);
+    dates.add(getFormattedDate(nextDay));
+  }
+  return dates;
+}
+
+function loadVisitorsStore() {
+  try {
+    if (fs.existsSync(VISITORS_STORE_FILE)) {
+      const data = JSON.parse(fs.readFileSync(VISITORS_STORE_FILE, 'utf-8'));
+      if (Array.isArray(data)) {
+        data.forEach((v: VisitorRecord) => {
+          if (v && v.visitorId) {
+            visitorsStore.set(v.visitorId, v);
+          }
+        });
+      } else if (typeof data === 'object' && data !== null) {
+        Object.values(data).forEach((v: any) => {
+          if (v && v.visitorId) {
+            visitorsStore.set(v.visitorId, v);
+          }
+        });
+      }
+      console.info(`[VisitorsStore] Loaded ${visitorsStore.size} persistent visitor records.`);
+      return;
+    }
+  } catch (err) {
+    console.warn('Failed to load visitors_store.json:', err);
+  }
+}
+
+function saveVisitorsStore() {
+  try {
+    const list = Array.from(visitorsStore.values());
+    fs.writeFileSync(VISITORS_STORE_FILE, JSON.stringify(list, null, 2), 'utf-8');
+  } catch (err) {
+    console.error('Failed to save visitors_store.json:', err);
+  }
+}
+
+async function syncVisitorToFirestore(record: VisitorRecord) {
+  try {
+    const projectId = firebaseConfig.projectId || 'empyrean-patrol-bvxch';
+    const databaseId = firebaseConfig.firestoreDatabaseId || 'ai-studio-piflix-2d1bb7c4-88f0-466a-95d5-c25d95f2c9a6';
+    const docUrl = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/${databaseId}/documents/visitors/${record.visitorId}`;
+    
+    const fields: Record<string, any> = {
+      visitorId: { stringValue: record.visitorId },
+      source: { stringValue: record.source },
+      firstSeen: { stringValue: record.firstSeen },
+      lastSeen: { stringValue: record.lastSeen },
+      visitCount: { integerValue: String(record.visitCount) },
+      visitDates: {
+        arrayValue: {
+          values: (record.visitDates || []).map(d => ({ stringValue: d }))
+        }
+      },
+      createdAt: { stringValue: record.createdAt },
+      updatedAt: { stringValue: record.updatedAt }
+    };
+    if (record.piUserId) {
+      fields.piUserId = { stringValue: record.piUserId };
+    }
+    if (record.piUsername) {
+      fields.piUsername = { stringValue: record.piUsername };
+    }
+
+    await fetch(docUrl, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fields })
+    });
+  } catch (err) {
+    console.warn(`Firestore visitor sync notice for ${record.visitorId}:`, err);
+  }
+}
+
+async function syncLikeToFirestore(like: LikedItem, deleted = false) {
+  try {
+    const projectId = firebaseConfig.projectId || 'empyrean-patrol-bvxch';
+    const databaseId = firebaseConfig.firestoreDatabaseId || 'ai-studio-piflix-2d1bb7c4-88f0-466a-95d5-c25d95f2c9a6';
+    const docKey = `${like.userId}_${like.contentId}`.replace(/[^a-zA-Z0-9_-]/g, '_');
+    const docUrl = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/${databaseId}/documents/likes/${docKey}`;
+    
+    if (deleted) {
+      await fetch(docUrl, { method: 'DELETE' });
+      return;
+    }
+
+    const fields: Record<string, any> = {
+      id: { stringValue: like.id },
+      userId: { stringValue: like.userId },
+      contentId: { stringValue: like.contentId },
+      contentType: { stringValue: like.contentType },
+      likedAt: { stringValue: like.likedAt }
+    };
+
+    await fetch(docUrl, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fields })
+    });
+  } catch (err) {
+    console.warn(`Firestore like sync notice for ${like.contentId}:`, err);
+  }
+}
+
+async function syncReviewToFirestore(review: ContentRatingReview, deleted = false) {
+  try {
+    const projectId = firebaseConfig.projectId || 'empyrean-patrol-bvxch';
+    const databaseId = firebaseConfig.firestoreDatabaseId || 'ai-studio-piflix-2d1bb7c4-88f0-466a-95d5-c25d95f2c9a6';
+    const docKey = `${review.id}`.replace(/[^a-zA-Z0-9_-]/g, '_');
+    const docUrl = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/${databaseId}/documents/reviews/${docKey}`;
+    
+    if (deleted) {
+      await fetch(docUrl, { method: 'DELETE' });
+      return;
+    }
+
+    const fields: Record<string, any> = {
+      id: { stringValue: review.id },
+      userId: { stringValue: review.userId },
+      username: { stringValue: review.username },
+      contentId: { stringValue: review.contentId },
+      rating: { integerValue: String(Math.round(review.rating)) },
+      review: { stringValue: review.review || '' },
+      createdAt: { stringValue: review.createdAt },
+      approved: { booleanValue: review.approved !== false }
+    };
+    if (review.userImage) {
+      fields.userImage = { stringValue: review.userImage };
+    }
+
+    await fetch(docUrl, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fields })
+    });
+  } catch (err) {
+    console.warn(`Firestore review sync notice for ${review.contentId}:`, err);
+  }
+}
+
+function computeVisitorAnalytics() {
+  const todayStr = getFormattedDate();
+  const weekDates = getWeekDates();
+  const currentMonthPrefix = todayStr.substring(0, 7);
+  const currentYearPrefix = todayStr.substring(0, 4);
+
+  let uniqueToday = 0;
+  let uniqueThisWeek = 0;
+  let uniqueThisMonth = 0;
+  let uniqueThisYear = 0;
+  const totalVisitors = visitorsStore.size;
+
+  let piBrowserVisitors = 0;
+  let externalWebVisitors = 0;
+
+  const recentVisitors: any[] = [];
+  const hourlyToday: Record<number, number> = {};
+  for (let h = 0; h < 24; h++) hourlyToday[h] = 0;
+
+  for (const visitor of visitorsStore.values()) {
+    if (visitor.source === 'pi_browser') {
+      piBrowserVisitors++;
+    } else {
+      externalWebVisitors++;
+    }
+
+    const dates = Array.isArray(visitor.visitDates) ? visitor.visitDates : [visitor.lastSeen.substring(0, 10)];
+
+    if (dates.includes(todayStr) || visitor.lastSeen.startsWith(todayStr)) {
+      uniqueToday++;
+      try {
+        const hour = new Date(visitor.lastSeen).getHours();
+        hourlyToday[hour] = (hourlyToday[hour] || 0) + 1;
+      } catch {}
+    }
+
+    if (dates.some(d => weekDates.has(d))) {
+      uniqueThisWeek++;
+    }
+
+    if (dates.some(d => d.startsWith(currentMonthPrefix))) {
+      uniqueThisMonth++;
+    }
+
+    if (dates.some(d => d.startsWith(currentYearPrefix))) {
+      uniqueThisYear++;
+    }
+
+    recentVisitors.push({
+      visitorId: visitor.visitorId.length > 14
+        ? `${visitor.visitorId.slice(0, 7)}...${visitor.visitorId.slice(-4)}`
+        : visitor.visitorId,
+      source: visitor.source,
+      piUsername: visitor.piUsername ? `${visitor.piUsername.slice(0, 3)}***` : undefined,
+      firstSeen: visitor.firstSeen,
+      lastSeen: visitor.lastSeen,
+      visitCount: visitor.visitCount
+    });
+  }
+
+  recentVisitors.sort((a, b) => new Date(b.lastSeen).getTime() - new Date(a.lastSeen).getTime());
+
+  return {
+    metrics: {
+      today: uniqueToday,
+      thisWeek: uniqueThisWeek,
+      thisMonth: uniqueThisMonth,
+      thisYear: uniqueThisYear,
+      totalVisitors
+    },
+    trafficSources: {
+      piBrowser: piBrowserVisitors,
+      externalWeb: externalWebVisitors
+    },
+    recentVisitors: recentVisitors.slice(0, 15),
+    hourlyToday,
+    serverTime: new Date().toISOString()
+  };
+}
+
+// Convert a ContentItem into Firestore REST document fields format
+function convertContentItemToFirestoreFields(item: ContentItem) {
+  const fields: Record<string, any> = {
+    id: { stringValue: String(item.id) },
+    title: { stringValue: String(item.title || '') },
+    description: { stringValue: String(item.description || '') },
+    type: { stringValue: item.type === 'series' ? 'series' : 'movie' },
+    coverImageUrl: { stringValue: String(item.coverImageUrl || '') },
+    videoUrl: { stringValue: String(item.videoUrl || '') },
+    trailerUrl: { stringValue: String(item.trailerUrl || '') },
+    year: { integerValue: String(item.year || new Date().getFullYear()) },
+    genre: { stringValue: Array.isArray(item.genre) ? item.genre.join(', ') : String(item.genre || 'General') },
+    language: { stringValue: String(item.language || 'English') },
+    country: { stringValue: String((item as any).country || 'International') },
+    director: { stringValue: String((item as any).director || 'Creator') },
+    rating: { doubleValue: Number(item.rating) || 8.0 },
+    quality: { stringValue: String(item.quality || 'HD') },
+    accessType: { stringValue: item.accessType === 'premium' ? 'premium' : 'free' },
+    published: { booleanValue: Boolean(item.published !== false) },
+    isFeatured: { booleanValue: Boolean((item as any).isFeatured) },
+    isTrending: { booleanValue: Boolean((item as any).isTrending !== undefined ? (item as any).isTrending : true) },
+    createdAt: { stringValue: String(item.createdAt || new Date().toISOString()) },
+    updatedAt: { stringValue: String(item.updatedAt || new Date().toISOString()) }
+  };
+
+  if (item.duration !== undefined) {
+    fields.duration = { integerValue: String(item.duration) };
+  }
+  if (item.seasonsCount !== undefined) {
+    fields.seasonsCount = { integerValue: String(item.seasonsCount) };
+  }
+
+  if (Array.isArray(item.seasons) && item.seasons.length > 0) {
+    fields.seasons = {
+      arrayValue: {
+        values: item.seasons.map(s => ({
+          mapValue: {
+            fields: {
+              id: { stringValue: String(s.id) },
+              seasonNumber: { integerValue: String(s.seasonNumber) },
+              seasonName: { stringValue: String(s.seasonName || s.title || `Season ${s.seasonNumber}`) },
+              title: { stringValue: String(s.title || s.seasonName || `Season ${s.seasonNumber}`) },
+              episodesCount: { integerValue: String(s.episodesCount || 0) }
+            }
+          }
+        }))
+      }
+    };
+  }
+
+  if (Array.isArray(item.episodes) && item.episodes.length > 0) {
+    fields.episodes = {
+      arrayValue: {
+        values: item.episodes.map(ep => ({
+          mapValue: {
+            fields: {
+              id: { stringValue: String(ep.id) },
+              seasonNumber: { integerValue: String(ep.seasonNumber || 1) },
+              seasonId: { stringValue: String(ep.seasonId || '') },
+              episodeNumber: { integerValue: String(ep.episodeNumber || 1) },
+              title: { stringValue: String(ep.title || '') },
+              description: { stringValue: String(ep.description || '') },
+              thumbnail: { stringValue: String(ep.thumbnail || '') },
+              videoUrl: { stringValue: String(ep.videoUrl || '') },
+              duration: { integerValue: String(ep.duration || 45) },
+              skipIntroSec: { integerValue: String(ep.skipIntroSec || 0) }
+            }
+          }
+        }))
+      }
+    };
+  }
+
+  return fields;
+}
+
+// Persist a ContentItem directly to Firestore via REST API
+async function persistContentItemToFirestore(item: ContentItem): Promise<boolean> {
+  try {
+    const projectId = firebaseConfig.projectId || 'empyrean-patrol-bvxch';
+    const databaseId = firebaseConfig.firestoreDatabaseId || 'ai-studio-piflix-2d1bb7c4-88f0-466a-95d5-c25d95f2c9a6';
+    const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/${databaseId}/documents/content/${encodeURIComponent(item.id)}`;
+
+    const fields = convertContentItemToFirestoreFields(item);
+    const res = await fetch(url, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fields })
+    });
+    if (res.ok) {
+      console.info(`[Firestore Persist] Successfully persisted ${item.id} (${item.title}) to Firestore.`);
+      return true;
+    } else {
+      console.warn(`[Firestore Persist Warning] Status ${res.status} for ${item.id}`);
+      return false;
+    }
+  } catch (err) {
+    console.warn(`[Firestore Persist Error] for ${item.id}:`, err);
+    return false;
+  }
+}
+
+// Delete a ContentItem permanently from Firestore via REST API
+async function deleteContentItemFromFirestore(id: string): Promise<boolean> {
+  try {
+    const projectId = firebaseConfig.projectId || 'empyrean-patrol-bvxch';
+    const databaseId = firebaseConfig.firestoreDatabaseId || 'ai-studio-piflix-2d1bb7c4-88f0-466a-95d5-c25d95f2c9a6';
+    const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/${databaseId}/documents/content/${encodeURIComponent(id)}`;
+
+    const res = await fetch(url, { method: 'DELETE' });
+    if (res.ok) {
+      console.info(`[Firestore Delete] Successfully removed ${id} from Firestore.`);
+      return true;
+    }
+    return false;
+  } catch (err) {
+    console.warn(`[Firestore Delete Error] for ${id}:`, err);
+    return false;
+  }
+}
+
 async function syncFromProductionFirestore() {
   const projectId = firebaseConfig.projectId || 'empyrean-patrol-bvxch';
   const databaseId = firebaseConfig.firestoreDatabaseId || 'ai-studio-piflix-2d1bb7c4-88f0-466a-95d5-c25d95f2c9a6';
   const firestoreQueryUrl = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/${databaseId}/documents:runQuery`;
 
   try {
-    // 1. Fetch published content from production Firestore
+    // 1. Fetch ALL content from production Firestore (both published and drafts)
     const queryRes = await fetch(firestoreQueryUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         structuredQuery: {
-          from: [{ collectionId: 'content' }],
-          where: {
-            fieldFilter: {
-              field: { fieldPath: 'published' },
-              op: 'EQUAL',
-              value: { booleanValue: true }
-            }
-          }
+          from: [{ collectionId: 'content' }]
         }
       })
     });
+
+    const firestoreFoundIds = new Set<string>();
 
     if (queryRes.ok) {
       const results: any = await queryRes.json();
@@ -484,7 +1100,15 @@ async function syncFromProductionFirestore() {
           if (!item.document || !item.document.fields) continue;
           const fields = item.document.fields;
           const id = fields.id?.stringValue || item.document.name.split('/').pop();
-          if (!id || deletedContentIds.has(id)) continue;
+          if (!id) continue;
+
+          // If item was explicitly deleted by Admin, remove from Firestore
+          if (deletedContentIds.has(id)) {
+            deleteContentItemFromFirestore(id).catch(() => {});
+            continue;
+          }
+
+          firestoreFoundIds.add(id);
 
           const type = fields.type?.stringValue || (id.startsWith('s-') ? 'series' : 'movie');
           const title = fields.title?.stringValue || 'Untitled';
@@ -494,32 +1118,55 @@ async function syncFromProductionFirestore() {
           const trailerUrl = fields.trailerUrl?.stringValue || '';
           const year = Number(fields.year?.integerValue || fields.year?.stringValue || new Date().getFullYear());
           const genreStr = fields.genre?.stringValue || 'General';
-          const genre = genreStr.split(',').map((s: string) => s.trim());
+          const genre = genreStr.split(',').map((s: string) => s.trim()).filter(Boolean);
           const language = fields.language?.stringValue || 'English';
+          const country = fields.country?.stringValue || 'International';
+          const director = fields.director?.stringValue || 'Creator';
           const rating = Number(fields.rating?.doubleValue || fields.rating?.integerValue || 8.0);
           const qualityBadge = (fields.quality?.stringValue as 'HD' | 'FHD' | '4K') || 'HD';
           const accessType = (fields.accessType?.stringValue as 'free' | 'premium') || 'free';
           const isPremium = accessType === 'premium';
           const isPublished = fields.published?.booleanValue !== false;
+          const isFeatured = fields.isFeatured?.booleanValue || false;
+          const isTrending = fields.isTrending?.booleanValue !== undefined ? fields.isTrending.booleanValue : true;
           const createdAt = fields.createdAt?.stringValue || item.document.createTime || new Date().toISOString();
           const updatedAt = fields.updatedAt?.stringValue || item.document.updateTime || new Date().toISOString();
 
           // Episodes
           const rawEpisodes = fields.episodes?.arrayValue?.values || [];
-          const parsedEpisodes = rawEpisodes.map((ev: any, idx: number) => {
+          const parsedEpisodes: Episode[] = rawEpisodes.map((ev: any, idx: number) => {
             const ef = ev.mapValue?.fields || {};
+            const sNum = Number(ef.seasonNumber?.integerValue || 1);
+            const epNum = Number(ef.episodeNumber?.integerValue || idx + 1);
             return {
               id: ef.id?.stringValue || `ep-${id}-${idx + 1}`,
               seriesId: id,
-              seasonId: 'sn-' + id + '-1',
-              episodeNumber: Number(ef.episodeNumber?.integerValue || idx + 1),
-              title: ef.title?.stringValue || `Episode ${idx + 1}`,
+              seasonId: ef.seasonId?.stringValue || `sn-${id}-${sNum}`,
+              seasonNumber: sNum,
+              seasonName: ef.seasonName?.stringValue || `Season ${sNum}`,
+              episodeNumber: epNum,
+              title: ef.title?.stringValue || `Episode ${epNum}`,
               description: ef.description?.stringValue || '',
               thumbnail: ef.thumbnail?.stringValue || coverImageUrl,
               videoUrl: ef.videoUrl?.stringValue || videoUrl,
               duration: Number(ef.duration?.integerValue || 45),
               skipIntroSec: Number(ef.skipIntroSec?.integerValue || 0),
               createdAt
+            };
+          });
+
+          // Seasons
+          const rawSeasons = fields.seasons?.arrayValue?.values || [];
+          const parsedSeasons: Season[] = rawSeasons.map((sv: any, idx: number) => {
+            const sf = sv.mapValue?.fields || {};
+            const sNum = Number(sf.seasonNumber?.integerValue || idx + 1);
+            return {
+              id: sf.id?.stringValue || `sn-${id}-${sNum}`,
+              seriesId: id,
+              seasonNumber: sNum,
+              seasonName: sf.seasonName?.stringValue || sf.title?.stringValue || `Season ${sNum}`,
+              title: sf.title?.stringValue || sf.seasonName?.stringValue || `Season ${sNum}`,
+              episodesCount: Number(sf.episodesCount?.integerValue || 0)
             };
           });
 
@@ -535,32 +1182,42 @@ async function syncFromProductionFirestore() {
               trailerUrl,
               videoUrl,
               year,
-              duration: 95,
+              duration: Number(fields.duration?.integerValue || fields.duration?.doubleValue || 90),
               genre,
               language,
-              country: 'International',
-              director: 'Creator',
+              country,
+              director,
               cast: [],
               rating,
-              ageClassification: 'PG-13',
+              ageClassification: fields.ageClassification?.stringValue || 'PG-13',
               isPremium,
               accessType,
-              isFeatured: false,
-              isTrending: true,
+              isFeatured,
+              isTrending,
               isPublished,
               published: isPublished,
               qualityBadge,
-              viewsCount: 0,
-              likesCount: 0,
+              viewsCount: Number(fields.viewsCount?.integerValue || 0),
+              likesCount: Number(fields.likesCount?.integerValue || 0),
               createdAt,
               updatedAt
             };
+
             if (existingIdx > -1) {
-              movies[existingIdx] = { ...movies[existingIdx], ...movieObj };
+              const localMovie = movies[existingIdx];
+              const firestoreTime = new Date(updatedAt).getTime();
+              const localTime = new Date(localMovie.updatedAt || localMovie.createdAt || 0).getTime();
+              if (firestoreTime >= localTime) {
+                movies[existingIdx] = { ...localMovie, ...movieObj };
+                changed = true;
+              } else {
+                // Local version is newer, push to Firestore
+                persistContentItemToFirestore(mapToContentItem(localMovie)).catch(() => {});
+              }
             } else {
               movies.unshift(movieObj);
+              changed = true;
             }
-            changed = true;
           } else {
             // TV Series
             const existingIdx = seriesList.findIndex(s => s.id === id);
@@ -575,51 +1232,71 @@ async function syncFromProductionFirestore() {
               year,
               genre,
               language,
-              country: 'International',
-              director: 'Creator',
+              country,
+              director,
               cast: [],
               rating,
-              ageClassification: 'PG-13',
+              ageClassification: fields.ageClassification?.stringValue || 'PG-13',
               isPremium,
               accessType,
-              isFeatured: false,
-              isTrending: true,
+              isFeatured,
+              isTrending,
               isPublished,
               published: isPublished,
               qualityBadge,
-              viewsCount: 0,
-              likesCount: 0,
-              seasonsCount: 1,
+              viewsCount: Number(fields.viewsCount?.integerValue || 0),
+              likesCount: Number(fields.likesCount?.integerValue || 0),
+              seasonsCount: Math.max(1, parsedSeasons.length, Number(fields.seasonsCount?.integerValue || 1)),
               createdAt,
               updatedAt
             };
+
             if (existingIdx > -1) {
-              seriesList[existingIdx] = { ...seriesList[existingIdx], ...seriesObj };
+              const localSeries = seriesList[existingIdx];
+              const firestoreTime = new Date(updatedAt).getTime();
+              const localTime = new Date(localSeries.updatedAt || localSeries.createdAt || 0).getTime();
+              if (firestoreTime >= localTime) {
+                seriesList[existingIdx] = { ...localSeries, ...seriesObj };
+                if (parsedSeasons.length > 0) {
+                  seasonsList = seasonsList.filter(sn => sn.seriesId !== id);
+                  parsedSeasons.forEach(sn => seasonsList.push(sn));
+                }
+                if (parsedEpisodes.length > 0) {
+                  episodesList = episodesList.filter(e => e.seriesId !== id);
+                  parsedEpisodes.forEach(ep => episodesList.push(ep));
+                }
+                changed = true;
+              } else {
+                persistContentItemToFirestore(mapToContentItem(localSeries)).catch(() => {});
+              }
             } else {
               seriesList.unshift(seriesObj);
-            }
-
-            if (parsedEpisodes.length > 0) {
-              episodesList = episodesList.filter(e => e.seriesId !== id);
-              parsedEpisodes.forEach((ep: Episode) => episodesList.push(ep));
-              const defaultSeasonId = 'sn-' + id + '-1';
-              if (!seasonsList.some(sn => sn.id === defaultSeasonId)) {
-                seasonsList.push({
-                  id: defaultSeasonId,
-                  seriesId: id,
-                  seasonNumber: 1,
-                  title: 'Season 1',
-                  episodesCount: parsedEpisodes.length
-                });
+              if (parsedSeasons.length > 0) {
+                parsedSeasons.forEach(sn => seasonsList.push(sn));
               }
+              if (parsedEpisodes.length > 0) {
+                parsedEpisodes.forEach(ep => episodesList.push(ep));
+              }
+              changed = true;
             }
-            changed = true;
           }
         }
         if (changed) {
           saveContentStore();
           console.info(`[Firestore Sync] Synchronized item(s) from production Firestore.`);
         }
+      }
+    }
+
+    // Bidirectional sync: Push any local items not yet in Firestore to Firestore
+    for (const movie of movies) {
+      if (!deletedContentIds.has(movie.id) && !firestoreFoundIds.has(movie.id)) {
+        await persistContentItemToFirestore(mapToContentItem(movie));
+      }
+    }
+    for (const series of seriesList) {
+      if (!deletedContentIds.has(series.id) && !firestoreFoundIds.has(series.id)) {
+        await persistContentItemToFirestore(mapToContentItem(series));
       }
     }
 
@@ -651,6 +1328,138 @@ async function syncFromProductionFirestore() {
         console.info(`[Firestore Sync] Synchronized AppSettings from production Firestore.`);
       }
     }
+
+    // 3. Fetch Visitors from production Firestore
+    const visitorsQueryRes = await fetch(firestoreQueryUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        structuredQuery: {
+          from: [{ collectionId: 'visitors' }]
+        }
+      })
+    });
+    if (visitorsQueryRes.ok) {
+      const visitorsList: any[] = await visitorsQueryRes.json();
+      let importedCount = 0;
+      for (const item of visitorsList) {
+        if (!item.document || !item.document.fields) continue;
+        const fields = item.document.fields;
+        const visitorId = fields.visitorId?.stringValue;
+        if (!visitorId) continue;
+        const source = fields.source?.stringValue || 'external_web';
+        const piUserId = fields.piUserId?.stringValue;
+        const piUsername = fields.piUsername?.stringValue;
+        const firstSeen = fields.firstSeen?.stringValue || new Date().toISOString();
+        const lastSeen = fields.lastSeen?.stringValue || new Date().toISOString();
+        const visitCount = parseInt(fields.visitCount?.integerValue || '1', 10);
+        const visitDates = fields.visitDates?.arrayValue?.values
+          ? fields.visitDates.arrayValue.values.map((v: any) => v.stringValue).filter(Boolean)
+          : [lastSeen.substring(0, 10)];
+
+        const existing = visitorsStore.get(visitorId);
+        if (!existing) {
+          visitorsStore.set(visitorId, {
+            visitorId,
+            source: (source === 'pi_browser' ? 'pi_browser' : 'external_web'),
+            piUserId,
+            piUsername,
+            firstSeen,
+            lastSeen,
+            visitDates,
+            visitCount,
+            createdAt: fields.createdAt?.stringValue || firstSeen,
+            updatedAt: fields.updatedAt?.stringValue || lastSeen
+          });
+          importedCount++;
+        }
+      }
+      if (importedCount > 0) {
+        saveVisitorsStore();
+        console.info(`[Firestore Sync] Synchronized ${importedCount} visitors from production Firestore.`);
+      }
+    }
+
+    // 4. Fetch Likes from production Firestore
+    const likesQueryRes = await fetch(firestoreQueryUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        structuredQuery: {
+          from: [{ collectionId: 'likes' }]
+        }
+      })
+    });
+    if (likesQueryRes.ok) {
+      const likesList: any[] = await likesQueryRes.json();
+      let importedLikes = 0;
+      for (const item of likesList) {
+        if (!item.document || !item.document.fields) continue;
+        const fields = item.document.fields;
+        const id = fields.id?.stringValue;
+        const userId = fields.userId?.stringValue;
+        const contentId = fields.contentId?.stringValue;
+        const contentType = fields.contentType?.stringValue || 'movie';
+        const likedAt = fields.likedAt?.stringValue || new Date().toISOString();
+
+        if (id && userId && contentId) {
+          const exists = likedItems.some(l => l.userId === userId && l.contentId === contentId);
+          if (!exists) {
+            likedItems.push({ id, userId, contentId, contentType: contentType as any, likedAt });
+            importedLikes++;
+          }
+        }
+      }
+      if (importedLikes > 0) {
+        saveInteractionsStore();
+        console.info(`[Firestore Sync] Synchronized ${importedLikes} likes from production Firestore.`);
+      }
+    }
+
+    // 5. Fetch Reviews from production Firestore
+    const reviewsQueryRes = await fetch(firestoreQueryUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        structuredQuery: {
+          from: [{ collectionId: 'reviews' }]
+        }
+      })
+    });
+    if (reviewsQueryRes.ok) {
+      const reviewsList: any[] = await reviewsQueryRes.json();
+      let importedReviews = 0;
+      for (const item of reviewsList) {
+        if (!item.document || !item.document.fields) continue;
+        const fields = item.document.fields;
+        const id = fields.id?.stringValue;
+        const userId = fields.userId?.stringValue;
+        const contentId = fields.contentId?.stringValue;
+        const username = fields.username?.stringValue || 'Pioneer';
+        const userImage = fields.userImage?.stringValue;
+        const rating = fields.rating?.integerValue ? Number(fields.rating.integerValue) : (fields.rating?.doubleValue ? Number(fields.rating.doubleValue) : 8);
+        const reviewText = fields.review?.stringValue || '';
+        const createdAt = fields.createdAt?.stringValue || new Date().toISOString();
+        const approved = fields.approved?.booleanValue !== false;
+
+        if (id && userId && contentId) {
+          const idx = reviews.findIndex(r => r.id === id || (r.userId === userId && r.contentId === contentId));
+          if (idx >= 0) {
+            reviews[idx] = { id, userId, username, userImage, contentId, rating, review: reviewText, createdAt, approved };
+          } else {
+            reviews.unshift({ id, userId, username, userImage, contentId, rating, review: reviewText, createdAt, approved });
+            importedReviews++;
+          }
+        }
+      }
+      if (importedReviews > 0) {
+        saveInteractionsStore();
+        console.info(`[Firestore Sync] Synchronized ${importedReviews} reviews from production Firestore.`);
+      }
+    }
+
+    // Recalculate movie and series metrics with latest data
+    recalculateAllMetrics();
   } catch (syncErr) {
     console.warn('[Firestore Sync] Non-blocking initial Firestore sync notice:', syncErr);
   }
@@ -658,63 +1467,13 @@ async function syncFromProductionFirestore() {
 
 // Initialize stores from disk
 appSettings = loadSettingsStore();
+loadInteractionsStore();
 loadContentStore();
+recalculateAllMetrics();
+loadVisitorsStore();
 // Kick off non-blocking background synchronization with Firestore
 syncFromProductionFirestore();
-let watchHistory: WatchHistoryItem[] = [
-  {
-    id: 'wh-1',
-    userId: 'usr_demo',
-    contentId: 'm-tears-of-steel',
-    contentType: 'movie',
-    progressSeconds: 180,
-    durationSeconds: 720,
-    completionPercentage: 25,
-    lastWatched: new Date(Date.now() - 3600000).toISOString()
-  },
-  {
-    id: 'wh-2',
-    userId: 'usr_demo',
-    contentId: 's-pi-syndicate',
-    contentType: 'series',
-    episodeId: 'ep-pi-101',
-    progressSeconds: 950,
-    durationSeconds: 2880,
-    completionPercentage: 33,
-    lastWatched: new Date(Date.now() - 86400000).toISOString()
-  }
-];
-let watchlist: WatchlistItem[] = [
-  { id: 'wl-1', userId: 'usr_demo', contentId: 'm-lagos-shadows', contentType: 'movie', addedAt: new Date().toISOString() },
-  { id: 'wl-2', userId: 'usr_demo', contentId: 's-nairobi-dynasty', contentType: 'series', addedAt: new Date().toISOString() }
-];
-let likedItems: LikedItem[] = [
-  { id: 'lk-1', userId: 'usr_demo', contentId: 'm-serengeti-whispers', contentType: 'movie', likedAt: new Date().toISOString() }
-];
-let reviews: ContentRatingReview[] = [
-  {
-    id: 'rev-1',
-    userId: 'usr_demo',
-    username: 'PiPioneer_Alex',
-    userImage: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&auto=format&fit=crop&q=80',
-    contentId: 'm-tears-of-steel',
-    rating: 9,
-    review: 'Phenomenal sci-fi VFX and futuristic atmosphere! Streamed smoothly without lag on PiFlix+.',
-    createdAt: new Date(Date.now() - 43200000).toISOString(),
-    approved: true
-  },
-  {
-    id: 'rev-2',
-    userId: 'usr_admin',
-    username: 'piflix_admin',
-    userImage: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
-    contentId: 'm-lagos-shadows',
-    rating: 10,
-    review: 'Nollywood masterpiece! Top tier storytelling and sound design.',
-    createdAt: new Date(Date.now() - 12000000).toISOString(),
-    approved: true
-  }
-];
+
 let subscriptions: Subscription[] = [
   {
     id: 'sub-admin',
@@ -1207,33 +1966,225 @@ app.post('/api/admin/auth/login', async (req: Request, res: Response) => {
   });
 });
 
-// 1. Upload video file (MP4, WebM, MKV, MOV up to 2GB)
-app.post('/api/admin/upload/video', verifyAdmin, uploadVideo.single('video'), (req: Request, res: Response) => {
-  if (!req.file) {
+// 1. Upload video file (MP4, WebM, MKV, MOV up to 2GB) with automatic duration extraction
+// Supports single or multiple videos in one endpoint for robust media pipeline
+app.post('/api/admin/upload/video', verifyAdmin, uploadVideo.fields([{ name: 'video', maxCount: 1 }, { name: 'videos', maxCount: 20 }]), async (req: Request, res: Response) => {
+  const filesObj = req.files as { [fieldname: string]: Express.Multer.File[] } | undefined;
+  const singleFile = req.file || (filesObj?.video?.[0]) || (filesObj?.videos?.[0]);
+  
+  if (!singleFile) {
     return res.status(400).json({ error: 'No video file provided for upload' });
   }
 
-  const fileUrl = `/uploads/videos/${req.file.filename}`;
+  const fileUrl = `/uploads/videos/${singleFile.filename}`;
+  
+  // Extract real video duration via ffprobe
+  const durationInfo = await detectMediaDuration(singleFile.path);
+
   res.json({
     success: true,
     url: fileUrl,
-    filename: req.file.filename,
-    originalName: req.file.originalname,
-    size: req.file.size,
-    mimeType: req.file.mimetype
+    filename: singleFile.filename,
+    originalName: singleFile.originalname,
+    size: singleFile.size,
+    mimeType: singleFile.mimetype,
+    durationSeconds: durationInfo?.durationSeconds || null,
+    durationMinutes: durationInfo?.durationMinutes || null
   });
 });
 
-// 2. Upload cover image (JPG, PNG, WebP up to 30MB)
-app.post('/api/admin/upload/cover', verifyAdmin, uploadCover.single('cover'), (req: Request, res: Response) => {
+// Dedicated Multiple Movie / Video Batch Upload endpoint
+// Processes each video independently: one file failure never fails other items
+app.post('/api/admin/upload/videos', verifyAdmin, uploadVideo.array('videos', 25), async (req: Request, res: Response) => {
+  const files = req.files as Express.Multer.File[] | undefined;
+  if (!files || !Array.isArray(files) || files.length === 0) {
+    return res.status(400).json({ error: 'No video files provided for batch upload' });
+  }
+
+  const uploadedFiles: Array<{
+    filename: string;
+    originalName: string;
+    url: string;
+    size: number;
+    mimeType: string;
+    durationSeconds: number | null;
+    durationMinutes: number | null;
+  }> = [];
+
+  const errors: Array<{ originalName: string; error: string }> = [];
+
+  for (const file of files) {
+    try {
+      const fileUrl = `/uploads/videos/${file.filename}`;
+      const durationInfo = await detectMediaDuration(file.path);
+      uploadedFiles.push({
+        filename: file.filename,
+        originalName: file.originalname,
+        url: fileUrl,
+        size: file.size,
+        mimeType: file.mimetype,
+        durationSeconds: durationInfo?.durationSeconds || null,
+        durationMinutes: durationInfo?.durationMinutes || null
+      });
+    } catch (itemErr: any) {
+      errors.push({
+        originalName: file.originalname,
+        error: itemErr?.message || 'Processing error'
+      });
+    }
+  }
+
+  res.json({
+    success: uploadedFiles.length > 0,
+    files: uploadedFiles,
+    errors: errors.length > 0 ? errors : undefined,
+    count: uploadedFiles.length
+  });
+});
+
+// Chunked Upload Endpoint for Large Files (>100MB or flaky network environments)
+app.post('/api/admin/upload/chunk', verifyAdmin, express.raw({ type: 'application/octet-stream', limit: '50mb' }), async (req: Request, res: Response) => {
+  try {
+    const uploadId = String(req.headers['x-upload-id'] || '').replace(/[^a-zA-Z0-9_-]/g, '');
+    const chunkIndex = parseInt(String(req.headers['x-chunk-index'] || '0'), 10);
+    const totalChunks = parseInt(String(req.headers['x-total-chunks'] || '1'), 10);
+    const originalName = String(req.headers['x-original-name'] || 'video.mp4');
+
+    if (!uploadId) {
+      return res.status(400).json({ error: 'x-upload-id header is required' });
+    }
+
+    const chunkDir = path.join(uploadsDir, 'chunks', uploadId);
+    if (!fs.existsSync(chunkDir)) {
+      fs.mkdirSync(chunkDir, { recursive: true });
+    }
+
+    const chunkPath = path.join(chunkDir, `part_${chunkIndex}`);
+    fs.writeFileSync(chunkPath, req.body);
+
+    // If all chunks uploaded, assemble the final video file
+    if (chunkIndex === totalChunks - 1) {
+      const ext = path.extname(originalName) || '.mp4';
+      const baseName = path.basename(originalName, ext).replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 40);
+      const finalFilename = `vid_${Date.now()}_${baseName}${ext}`;
+      const finalFilePath = path.join(videosDir, finalFilename);
+
+      const writeStream = fs.createWriteStream(finalFilePath);
+      for (let i = 0; i < totalChunks; i++) {
+        const partPath = path.join(chunkDir, `part_${i}`);
+        if (fs.existsSync(partPath)) {
+          const chunkBuf = fs.readFileSync(partPath);
+          writeStream.write(chunkBuf);
+        }
+      }
+      writeStream.end();
+
+      // Clean up chunk temporary directory
+      try {
+        fs.rmSync(chunkDir, { recursive: true, force: true });
+      } catch {}
+
+      const durationInfo = await detectMediaDuration(finalFilePath);
+      const stat = fs.statSync(finalFilePath);
+
+      return res.json({
+        success: true,
+        completed: true,
+        url: `/uploads/videos/${finalFilename}`,
+        filename: finalFilename,
+        originalName,
+        size: stat.size,
+        durationMinutes: durationInfo?.durationMinutes || null,
+        durationSeconds: durationInfo?.durationSeconds || null
+      });
+    }
+
+    return res.json({
+      success: true,
+      completed: false,
+      chunkIndex,
+      totalChunks
+    });
+  } catch (err: any) {
+    console.error('[Chunk Upload Error]:', err);
+    return res.status(500).json({ error: err?.message || 'Chunk upload failed' });
+  }
+});
+
+// Detect video duration from uploaded file or streaming URL
+app.post('/api/admin/detect-duration', verifyAdmin, async (req: Request, res: Response) => {
+  const { videoUrl } = req.body;
+  if (!videoUrl || typeof videoUrl !== 'string') {
+    return res.status(400).json({ error: 'videoUrl is required' });
+  }
+
+  let target = videoUrl.trim();
+  if (target.startsWith('/uploads/videos/')) {
+    target = path.join(videosDir, path.basename(target));
+  }
+
+  const durationInfo = await detectMediaDuration(target);
+  if (durationInfo) {
+    return res.json({
+      success: true,
+      durationSeconds: durationInfo.durationSeconds,
+      durationMinutes: durationInfo.durationMinutes
+    });
+  }
+
+  return res.status(422).json({
+    success: false,
+    error: 'Could not detect duration from video URL. You can enter duration manually.'
+  });
+});
+
+// 2. Upload cover image (JPG, PNG, WebP up to 30MB) with Firestore backup
+app.post('/api/admin/upload/cover', verifyAdmin, uploadCover.single('cover'), async (req: Request, res: Response) => {
   if (!req.file) {
     return res.status(400).json({ error: 'No cover image file provided for upload' });
   }
 
   const fileUrl = `/uploads/covers/${req.file.filename}`;
+  const assetId = `cov_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+
+  // Backup to Firestore media_assets if size is under 950KB for zero-loss restarts
+  try {
+    if (req.file.size < 950 * 1024) {
+      const fileBuffer = fs.readFileSync(req.file.path);
+      const base64Str = fileBuffer.toString('base64');
+      const projectId = firebaseConfig.projectId || 'empyrean-patrol-bvxch';
+      const databaseId = firebaseConfig.firestoreDatabaseId || 'ai-studio-piflix-2d1bb7c4-88f0-466a-95d5-c25d95f2c9a6';
+      const docUrl = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/${databaseId}/documents/media_assets/${assetId}`;
+
+      const token = req.headers.authorization?.replace(/^Bearer\s+/i, '');
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (token && token !== 'admin_session') {
+        headers['Authorization'] = `Bearer ${token}`;
+      }
+
+      await fetch(docUrl, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          fields: {
+            assetId: { stringValue: assetId },
+            filename: { stringValue: req.file.filename },
+            mimeType: { stringValue: req.file.mimetype || 'image/jpeg' },
+            data: { stringValue: base64Str },
+            createdAt: { stringValue: new Date().toISOString() }
+          }
+        })
+      });
+    }
+  } catch (backupErr) {
+    console.warn('[Cover Firestore Backup] Notice:', backupErr);
+  }
+
   res.json({
     success: true,
     url: fileUrl,
+    assetUrl: `/api/media/covers/${assetId}`,
+    assetId,
     filename: req.file.filename,
     originalName: req.file.originalname,
     size: req.file.size,
@@ -1252,6 +2203,9 @@ function mapToContentItem(item: Movie | TVSeries): ContentItem {
   const episodes = isSeries 
     ? episodesList.filter(e => e.seriesId === item.id).map(e => ({
         id: e.id,
+        seasonId: e.seasonId,
+        seasonNumber: e.seasonNumber || 1,
+        seasonName: e.seasonName,
         episodeNumber: e.episodeNumber,
         title: e.title,
         description: e.description,
@@ -1259,6 +2213,17 @@ function mapToContentItem(item: Movie | TVSeries): ContentItem {
         videoUrl: e.videoUrl,
         duration: e.duration,
         skipIntroSec: e.skipIntroSec
+      }))
+    : undefined;
+
+  const seasons = isSeries
+    ? seasonsList.filter(s => s.seriesId === item.id).map(s => ({
+        id: s.id,
+        seriesId: s.seriesId,
+        seasonNumber: s.seasonNumber || 1,
+        seasonName: s.seasonName || s.title || `Season ${s.seasonNumber || 1}`,
+        title: s.title || s.seasonName || `Season ${s.seasonNumber || 1}`,
+        episodesCount: episodes ? episodes.filter(e => (e.seasonNumber || 1) === (s.seasonNumber || 1) || (e.seasonId && e.seasonId === s.id)).length : (s.episodesCount || 0)
       }))
     : undefined;
 
@@ -1271,6 +2236,8 @@ function mapToContentItem(item: Movie | TVSeries): ContentItem {
     videoUrl: (item as Movie).videoUrl || (episodes && episodes[0]?.videoUrl) || '',
     trailerUrl: item.trailerUrl || '',
     year: item.year,
+    duration: !isSeries ? ((item as Movie).duration || undefined) : undefined,
+    seasonsCount: isSeries ? ((item as TVSeries).seasonsCount || (seasons?.length || 1)) : undefined,
     genre: itemGenre,
     language: item.language,
     rating: item.rating,
@@ -1279,6 +2246,7 @@ function mapToContentItem(item: Movie | TVSeries): ContentItem {
     published: item.isPublished !== undefined ? item.isPublished : true,
     createdAt: item.createdAt || new Date().toISOString(),
     updatedAt: item.updatedAt || new Date().toISOString(),
+    seasons,
     episodes
   };
 }
@@ -1333,8 +2301,12 @@ app.get('/api/content', (req: Request, res: Response) => {
     allItems = allItems.filter(i => i.language.toLowerCase() === String(language).toLowerCase());
   }
 
-  // Sort by latest updated
-  allItems.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+  // Sort by newest and recently modified first
+  allItems.sort((a, b) => {
+    const timeA = new Date((a as any).updatedAt || (a as any).modifiedAt || a.createdAt || (a as any).publishedAt || 0).getTime();
+    const timeB = new Date((b as any).updatedAt || (b as any).modifiedAt || b.createdAt || (b as any).publishedAt || 0).getTime();
+    return timeB - timeA;
+  });
 
   res.json(allItems);
 });
@@ -1414,10 +2386,16 @@ app.post('/api/content', verifyAdmin, (req: Request, res: Response) => {
       updatedAt: now
     };
 
-    // Remove existing if replacing ID
+    // Remove existing if replacing ID and clear any previous deleted marker
+    deletedContentIds.delete(id);
     movies = movies.filter(m => m.id !== id);
     movies.unshift(newMovie);
     saveContentStore();
+
+    // Persist permanently to Firestore
+    persistContentItemToFirestore(mapToContentItem(newMovie)).catch(err => {
+      console.warn('[Firestore Content Post Warning]:', err);
+    });
 
     return res.json({ success: true, content: mapToContentItem(newMovie) });
   } else {
@@ -1452,41 +2430,91 @@ app.post('/api/content', verifyAdmin, (req: Request, res: Response) => {
       updatedAt: now
     };
 
+    deletedContentIds.delete(id);
     seriesList = seriesList.filter(s => s.id !== id);
     seriesList.unshift(newSeries);
 
-    // Update seasons and episodes
-    if (Array.isArray(episodes) && episodes.length > 0) {
-      episodesList = episodesList.filter(e => e.seriesId !== id);
-      const defaultSeasonId = 'sn-' + id + '-1';
-      if (!seasonsList.some(sn => sn.id === defaultSeasonId)) {
-        seasonsList.push({
-          id: defaultSeasonId,
-          seriesId: id,
-          seasonNumber: 1,
-          title: 'Season 1',
-          episodesCount: episodes.length
-        });
-      }
-
-      episodes.forEach((ep: any, idx: number) => {
-        episodesList.push({
-          id: ep.id || `ep-${id}-${idx + 1}`,
-          seriesId: id,
-          seasonId: defaultSeasonId,
-          episodeNumber: ep.episodeNumber || idx + 1,
-          title: ep.title || `Episode ${idx + 1}`,
-          description: ep.description || '',
-          thumbnail: ep.thumbnail || coverImageUrl || '',
-          videoUrl: ep.videoUrl || videoUrl || '',
-          duration: ep.duration || 45,
-          skipIntroSec: ep.skipIntroSec || 0,
-          createdAt: now
-        });
+    // Safe merge of seasons and episodes
+    const rawSeasons = Array.isArray(req.body.seasons) ? req.body.seasons : [];
+    if (rawSeasons.length > 0) {
+      rawSeasons.forEach((sn: any) => {
+        const sNum = Number(sn.seasonNumber) || 1;
+        const sName = sn.seasonName || sn.title || `Season ${sNum}`;
+        const existingIdx = seasonsList.findIndex(s => s.id === sn.id || (s.seriesId === id && s.seasonNumber === sNum));
+        if (existingIdx > -1) {
+          seasonsList[existingIdx] = {
+            ...seasonsList[existingIdx],
+            seasonNumber: sNum,
+            seasonName: sName,
+            title: sn.title || sName
+          };
+        } else {
+          seasonsList.push({
+            id: sn.id || `sn-${id}-${sNum}-${Date.now()}`,
+            seriesId: id,
+            seasonNumber: sNum,
+            seasonName: sName,
+            title: sn.title || sName,
+            episodesCount: 0
+          });
+        }
       });
     }
 
+    if (Array.isArray(episodes) && episodes.length > 0) {
+      let firstSeason = seasonsList.find(sn => sn.seriesId === id);
+      if (!firstSeason) {
+        firstSeason = {
+          id: 'sn-' + id + '-1',
+          seriesId: id,
+          seasonNumber: 1,
+          seasonName: 'Season 1',
+          title: 'Season 1',
+          episodesCount: 0
+        };
+        seasonsList.push(firstSeason);
+      }
+
+      episodes.forEach((ep: any, idx: number) => {
+        const epSeason = seasonsList.find(s => s.id === ep.seasonId) || firstSeason!;
+        const existingEpIdx = episodesList.findIndex(e => e.id === ep.id);
+        const epNum = Number(ep.episodeNumber) || (idx + 1);
+        const epObj: Episode = {
+          id: ep.id || `ep-${id}-${epSeason.id}-${epNum}-${Date.now()}`,
+          seriesId: id,
+          seasonId: epSeason.id,
+          seasonNumber: ep.seasonNumber || epSeason.seasonNumber || 1,
+          seasonName: ep.seasonName || epSeason.seasonName || `Season ${epSeason.seasonNumber}`,
+          episodeNumber: epNum,
+          title: ep.title || `Episode ${epNum}`,
+          description: ep.description || '',
+          thumbnail: ep.thumbnail || coverImageUrl || '',
+          videoUrl: ep.videoUrl || videoUrl || '',
+          duration: Number(ep.duration) || 45,
+          skipIntroSec: Number(ep.skipIntroSec) || 0,
+          createdAt: ep.createdAt || now
+        };
+        if (existingEpIdx > -1) {
+          episodesList[existingEpIdx] = { ...episodesList[existingEpIdx], ...epObj };
+        } else {
+          episodesList.push(epObj);
+        }
+      });
+    }
+
+    // Recalculate episodes count for all seasons of this series
+    seasonsList.filter(s => s.seriesId === id).forEach(sn => {
+      sn.episodesCount = episodesList.filter(e => e.seriesId === id && e.seasonId === sn.id).length;
+    });
+    newSeries.seasonsCount = Math.max(1, seasonsList.filter(s => s.seriesId === id).length);
+
     saveContentStore();
+
+    // Persist permanently to Firestore
+    persistContentItemToFirestore(mapToContentItem(newSeries)).catch(err => {
+      console.warn('[Firestore Series Post Warning]:', err);
+    });
+
     return res.json({ success: true, content: mapToContentItem(newSeries) });
   }
 });
@@ -1495,6 +2523,7 @@ app.post('/api/content', verifyAdmin, (req: Request, res: Response) => {
 app.put('/api/content/:id', verifyAdmin, (req: Request, res: Response) => {
   const { id } = req.params;
   const now = new Date().toISOString();
+  deletedContentIds.delete(id);
 
   // Check movie
   const movieIdx = movies.findIndex(m => m.id === id);
@@ -1505,7 +2534,7 @@ app.put('/api/content/:id', verifyAdmin, (req: Request, res: Response) => {
 
     const updatedMovie: Movie = {
       ...current,
-      title: req.body.title !== undefined ? req.body.title : current.title,
+      title: req.body.title !== undefined ? String(req.body.title).trim() : current.title,
       description: req.body.description !== undefined ? req.body.description : current.description,
       poster: req.body.coverImageUrl || req.body.poster || current.poster,
       backdrop: req.body.coverImageUrl || req.body.backdrop || current.backdrop,
@@ -1513,8 +2542,13 @@ app.put('/api/content/:id', verifyAdmin, (req: Request, res: Response) => {
       videoUrl: req.body.videoUrl !== undefined ? req.body.videoUrl : current.videoUrl,
       trailerUrl: req.body.trailerUrl !== undefined ? req.body.trailerUrl : current.trailerUrl,
       year: req.body.year !== undefined ? Number(req.body.year) : current.year,
+      duration: req.body.duration !== undefined ? Number(req.body.duration) : (current.duration || 90),
       rating: req.body.rating !== undefined ? Number(req.body.rating) : current.rating,
       language: req.body.language !== undefined ? req.body.language : current.language,
+      country: req.body.country !== undefined ? req.body.country : (current.country || 'International'),
+      director: req.body.director !== undefined ? req.body.director : (current.director || 'Creator'),
+      cast: Array.isArray(req.body.cast) ? req.body.cast : current.cast,
+      ageClassification: req.body.ageClassification !== undefined ? req.body.ageClassification : current.ageClassification,
       qualityBadge: req.body.quality !== undefined ? req.body.quality : current.qualityBadge,
       genre: req.body.genre !== undefined 
         ? (Array.isArray(req.body.genre) ? req.body.genre : String(req.body.genre).split(',').map((s: string) => s.trim()))
@@ -1523,11 +2557,19 @@ app.put('/api/content/:id', verifyAdmin, (req: Request, res: Response) => {
       accessType: isPremium ? 'premium' : 'free',
       isPublished,
       published: isPublished,
+      isFeatured: req.body.isFeatured !== undefined ? Boolean(req.body.isFeatured) : current.isFeatured,
+      isTrending: req.body.isTrending !== undefined ? Boolean(req.body.isTrending) : current.isTrending,
       updatedAt: now
     };
 
     movies[movieIdx] = updatedMovie;
     saveContentStore();
+
+    // Persist authoritative update to Firestore
+    persistContentItemToFirestore(mapToContentItem(updatedMovie)).catch(err => {
+      console.warn('[Firestore Movie Put Warning]:', err);
+    });
+
     return res.json({ success: true, content: mapToContentItem(updatedMovie) });
   }
 
@@ -1540,7 +2582,7 @@ app.put('/api/content/:id', verifyAdmin, (req: Request, res: Response) => {
 
     const updatedSeries: TVSeries = {
       ...current,
-      title: req.body.title !== undefined ? req.body.title : current.title,
+      title: req.body.title !== undefined ? String(req.body.title).trim() : current.title,
       description: req.body.description !== undefined ? req.body.description : current.description,
       poster: req.body.coverImageUrl || req.body.poster || current.poster,
       backdrop: req.body.coverImageUrl || req.body.backdrop || current.backdrop,
@@ -1549,6 +2591,10 @@ app.put('/api/content/:id', verifyAdmin, (req: Request, res: Response) => {
       year: req.body.year !== undefined ? Number(req.body.year) : current.year,
       rating: req.body.rating !== undefined ? Number(req.body.rating) : current.rating,
       language: req.body.language !== undefined ? req.body.language : current.language,
+      country: req.body.country !== undefined ? req.body.country : (current.country || 'International'),
+      director: req.body.director !== undefined ? req.body.director : (current.director || 'Creator'),
+      cast: Array.isArray(req.body.cast) ? req.body.cast : current.cast,
+      ageClassification: req.body.ageClassification !== undefined ? req.body.ageClassification : current.ageClassification,
       qualityBadge: req.body.quality !== undefined ? req.body.quality : current.qualityBadge,
       genre: req.body.genre !== undefined 
         ? (Array.isArray(req.body.genre) ? req.body.genre : String(req.body.genre).split(',').map((s: string) => s.trim()))
@@ -1557,42 +2603,120 @@ app.put('/api/content/:id', verifyAdmin, (req: Request, res: Response) => {
       accessType: isPremium ? 'premium' : 'free',
       isPublished,
       published: isPublished,
+      isFeatured: req.body.isFeatured !== undefined ? Boolean(req.body.isFeatured) : current.isFeatured,
+      isTrending: req.body.isTrending !== undefined ? Boolean(req.body.isTrending) : current.isTrending,
       updatedAt: now
     };
 
     seriesList[seriesIdx] = updatedSeries;
 
-    // If episodes updated
-    if (Array.isArray(req.body.episodes)) {
-      episodesList = episodesList.filter(e => e.seriesId !== id);
-      const defaultSeasonId = 'sn-' + id + '-1';
-      req.body.episodes.forEach((ep: any, idx: number) => {
-        episodesList.push({
-          id: ep.id || `ep-${id}-${idx + 1}`,
-          seriesId: id,
-          seasonId: defaultSeasonId,
-          episodeNumber: ep.episodeNumber || idx + 1,
-          title: ep.title || `Episode ${idx + 1}`,
-          description: ep.description || '',
-          thumbnail: ep.thumbnail || updatedSeries.coverImageUrl || updatedSeries.poster,
-          videoUrl: ep.videoUrl || '',
-          duration: ep.duration || 45,
-          skipIntroSec: ep.skipIntroSec || 0,
-          createdAt: now
-        });
+    // Safe merge of seasons
+    const rawSeasons = Array.isArray(req.body.seasons) ? req.body.seasons : [];
+    if (rawSeasons.length > 0) {
+      rawSeasons.forEach((sn: any) => {
+        const sNum = Number(sn.seasonNumber) || 1;
+        const sName = sn.seasonName || sn.title || `Season ${sNum}`;
+        const existingIdx = seasonsList.findIndex(s => s.id === sn.id || (s.seriesId === id && s.seasonNumber === sNum));
+        if (existingIdx > -1) {
+          seasonsList[existingIdx] = {
+            ...seasonsList[existingIdx],
+            seasonNumber: sNum,
+            seasonName: sName,
+            title: sn.title || sName
+          };
+        } else {
+          seasonsList.push({
+            id: sn.id || `sn-${id}-${sNum}-${Date.now()}`,
+            seriesId: id,
+            seasonNumber: sNum,
+            seasonName: sName,
+            title: sn.title || sName,
+            episodesCount: 0
+          });
+        }
       });
     }
 
+    // If explicit deletedEpisodeIds provided, delete only those
+    if (Array.isArray(req.body.deletedEpisodeIds) && req.body.deletedEpisodeIds.length > 0) {
+      const toDelete = new Set(req.body.deletedEpisodeIds);
+      episodesList = episodesList.filter(e => !toDelete.has(e.id));
+    }
+
+    if (Array.isArray(req.body.episodes)) {
+      let defaultSeason = seasonsList.find(sn => sn.seriesId === id);
+      if (!defaultSeason) {
+        defaultSeason = {
+          id: 'sn-' + id + '-1',
+          seriesId: id,
+          seasonNumber: 1,
+          seasonName: 'Season 1',
+          title: 'Season 1',
+          episodesCount: 0
+        };
+        seasonsList.push(defaultSeason);
+      }
+
+      req.body.episodes.forEach((ep: any, idx: number) => {
+        const targetSeason = seasonsList.find(s => (ep.seasonId && s.id === ep.seasonId) || (s.seriesId === id && s.seasonNumber === (Number(ep.seasonNumber) || 1))) || defaultSeason!;
+        const existingIdx = episodesList.findIndex(e => e.id === ep.id);
+        const epNum = Number(ep.episodeNumber) || (idx + 1);
+        const epObj: Episode = {
+          id: ep.id || `ep-${id}-${targetSeason.id}-${epNum}-${Date.now()}`,
+          seriesId: id,
+          seasonId: targetSeason.id,
+          seasonNumber: ep.seasonNumber || targetSeason.seasonNumber || 1,
+          seasonName: ep.seasonName || targetSeason.seasonName || `Season ${targetSeason.seasonNumber}`,
+          episodeNumber: epNum,
+          title: ep.title || `Episode ${epNum}`,
+          description: ep.description || '',
+          thumbnail: ep.thumbnail || updatedSeries.coverImageUrl || updatedSeries.poster,
+          videoUrl: ep.videoUrl !== undefined ? ep.videoUrl : '',
+          duration: Number(ep.duration) || 45,
+          skipIntroSec: Number(ep.skipIntroSec) || 0,
+          createdAt: ep.createdAt || now
+        };
+
+        if (existingIdx > -1) {
+          episodesList[existingIdx] = {
+            ...episodesList[existingIdx],
+            ...epObj,
+            videoUrl: ep.videoUrl !== undefined ? ep.videoUrl : episodesList[existingIdx].videoUrl,
+            thumbnail: ep.thumbnail !== undefined ? ep.thumbnail : episodesList[existingIdx].thumbnail
+          };
+        } else {
+          episodesList.push(epObj);
+        }
+      });
+    }
+
+    // Recalculate episodes count for all seasons of this series
+    seasonsList.filter(s => s.seriesId === id).forEach(sn => {
+      sn.episodesCount = episodesList.filter(e => e.seriesId === id && (e.seasonId === sn.id || (e.seasonNumber || 1) === sn.seasonNumber)).length;
+    });
+    updatedSeries.seasonsCount = Math.max(1, seasonsList.filter(s => s.seriesId === id).length);
+
     saveContentStore();
+
+    // Persist authoritative update to Firestore
+    persistContentItemToFirestore(mapToContentItem(updatedSeries)).catch(err => {
+      console.warn('[Firestore Series Put Warning]:', err);
+    });
+
     return res.json({ success: true, content: mapToContentItem(updatedSeries) });
   }
 
   return res.status(404).json({ error: 'Content item not found' });
 });
 
-// DELETE content item
+// DELETE content item - Explicit admin deletion removes database records and unlinks associated media
 app.delete('/api/content/:id', verifyAdmin, async (req: Request, res: Response) => {
   const { id } = req.params;
+
+  // Find the item before removing to clean up associated disk media if requested
+  const targetMovie = movies.find(m => m.id === id);
+  const targetSeries = seriesList.find(s => s.id === id);
+  const targetEpisodes = episodesList.filter(e => e.seriesId === id);
 
   deletedContentIds.add(id);
   movies = movies.filter(m => m.id !== id);
@@ -1601,18 +2725,38 @@ app.delete('/api/content/:id', verifyAdmin, async (req: Request, res: Response) 
   seasonsList = seasonsList.filter(sn => sn.seriesId !== id);
   saveContentStore();
 
-  // Also issue persistent delete to production Firestore via REST
+  // Safely clean up associated local media files on explicit Admin delete
   try {
-    const projectId = firebaseConfig.projectId || 'empyrean-patrol-bvxch';
-    const databaseId = firebaseConfig.firestoreDatabaseId || 'ai-studio-piflix-2d1bb7c4-88f0-466a-95d5-c25d95f2c9a6';
-    const firestoreDeleteUrl = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/${databaseId}/documents/content/${id}`;
-    const token = req.headers.authorization?.replace(/^Bearer\s+/i, '');
-    const headers: Record<string, string> = {};
-    if (token) headers['Authorization'] = `Bearer ${token}`;
-    await fetch(firestoreDeleteUrl, { method: 'DELETE', headers });
-  } catch (fsErr) {
-    console.warn(`[Firestore Delete] Non-blocking server delete notice for ${id}:`, fsErr);
+    const urlsToClean: string[] = [];
+    if (targetMovie?.videoUrl) urlsToClean.push(targetMovie.videoUrl);
+    if (targetMovie?.coverImageUrl) urlsToClean.push(targetMovie.coverImageUrl);
+    if (targetSeries?.coverImageUrl) urlsToClean.push(targetSeries.coverImageUrl);
+    targetEpisodes.forEach(ep => {
+      if (ep.videoUrl) urlsToClean.push(ep.videoUrl);
+      if (ep.thumbnail) urlsToClean.push(ep.thumbnail);
+    });
+
+    for (const rawUrl of urlsToClean) {
+      if (rawUrl.startsWith('/uploads/videos/')) {
+        const filePath = path.join(videosDir, path.basename(rawUrl));
+        if (fs.existsSync(filePath)) {
+          try { fs.unlinkSync(filePath); } catch {}
+        }
+      } else if (rawUrl.startsWith('/uploads/covers/')) {
+        const filePath = path.join(coversDir, path.basename(rawUrl));
+        if (fs.existsSync(filePath)) {
+          try { fs.unlinkSync(filePath); } catch {}
+        }
+      }
+    }
+  } catch (cleanErr) {
+    console.warn('[Media Disk Cleanup Notice]:', cleanErr);
   }
+
+  // Also issue persistent delete to production Firestore via REST
+  deleteContentItemFromFirestore(id).catch(fsErr => {
+    console.warn(`[Firestore Delete] Server delete notice for ${id}:`, fsErr);
+  });
 
   res.json({ success: true, message: 'Content item deleted successfully' });
 });
@@ -1687,6 +2831,13 @@ app.get('/api/movies', (req: Request, res: Response) => {
     result = result.filter(m => m.isTrending);
   }
 
+  // Prioritize newest and recently modified movies first
+  result.sort((a, b) => {
+    const timeA = new Date((a as any).updatedAt || (a as any).modifiedAt || a.createdAt || (a as any).publishedAt || 0).getTime();
+    const timeB = new Date((b as any).updatedAt || (b as any).modifiedAt || b.createdAt || (b as any).publishedAt || 0).getTime();
+    return timeB - timeA;
+  });
+
   res.json(result);
 });
 
@@ -1731,8 +2882,10 @@ app.post('/api/movies', (req: Request, res: Response) => {
     updatedAt: new Date().toISOString()
   };
 
+  deletedContentIds.delete(newMovie.id);
   movies.unshift(newMovie);
   saveContentStore();
+  persistContentItemToFirestore(mapToContentItem(newMovie)).catch(() => {});
   res.json({ success: true, movie: newMovie });
 });
 
@@ -1742,12 +2895,14 @@ app.put('/api/movies/:id', (req: Request, res: Response) => {
     return res.status(404).json({ error: 'Movie not found' });
   }
 
+  deletedContentIds.delete(req.params.id);
   movies[index] = {
     ...movies[index],
     ...req.body,
     updatedAt: new Date().toISOString()
   };
   saveContentStore();
+  persistContentItemToFirestore(mapToContentItem(movies[index])).catch(() => {});
 
   res.json({ success: true, movie: movies[index] });
 });
@@ -1758,36 +2913,81 @@ app.delete('/api/movies/:id', (req: Request, res: Response) => {
     return res.status(404).json({ error: 'Movie not found' });
   }
   const deleted = movies.splice(index, 1);
+  deletedContentIds.add(req.params.id);
   saveContentStore();
+  deleteContentItemFromFirestore(req.params.id).catch(() => {});
   res.json({ success: true, movie: deleted[0] });
 });
 
-// Toggle Like
-app.post('/api/movies/:id/like', (req: Request, res: Response) => {
-  const userId = req.body.userId || 'usr_demo';
-  const movieId = req.params.id;
-  const movie = movies.find(m => m.id === movieId);
-  if (!movie) return res.status(404).json({ error: 'Movie not found' });
+// Toggle Like (Persistent for Movies and TV Series with Firestore & disk backup)
+async function handleToggleLike(req: Request, res: Response) {
+  try {
+    const userId = String(req.body.userId || 'usr_demo').trim();
+    const contentId = String(req.params.id || '').trim();
 
-  const existingIndex = likedItems.findIndex(l => l.userId === userId && l.contentId === movieId);
-  let liked = false;
-  if (existingIndex > -1) {
-    likedItems.splice(existingIndex, 1);
-    movie.likesCount = Math.max(0, movie.likesCount - 1);
-    liked = false;
-  } else {
-    likedItems.push({
-      id: 'lk-' + Date.now(),
-      userId,
-      contentId: movieId,
-      contentType: 'movie',
-      likedAt: new Date().toISOString()
+    if (!contentId) {
+      return res.status(400).json({ error: 'contentId is required' });
+    }
+
+    const movie = movies.find(m => m.id === contentId);
+    const series = seriesList.find(s => s.id === contentId);
+    const targetItem = movie || series;
+    if (!targetItem) {
+      return res.status(404).json({ error: 'Content item not found' });
+    }
+    const contentType = movie ? 'movie' : 'series';
+
+    const existingIndex = likedItems.findIndex(l => l.userId === userId && l.contentId === contentId);
+    let liked = false;
+
+    if (existingIndex > -1) {
+      const removedLike = likedItems.splice(existingIndex, 1)[0];
+      liked = false;
+      syncLikeToFirestore(removedLike, true).catch(() => {});
+    } else {
+      const newLike: LikedItem = {
+        id: `lk-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+        userId,
+        contentId,
+        contentType: contentType as any,
+        likedAt: new Date().toISOString()
+      };
+      likedItems.push(newLike);
+      liked = true;
+      syncLikeToFirestore(newLike, false).catch(() => {});
+    }
+
+    // Recompute exact count from persistent list
+    const actualLikesCount = likedItems.filter(l => l.contentId === contentId).length;
+    targetItem.likesCount = actualLikesCount;
+
+    saveInteractionsStore();
+    saveContentStore();
+
+    return res.json({
+      success: true,
+      liked,
+      likesCount: actualLikesCount,
+      contentId,
+      contentType
     });
-    movie.likesCount += 1;
-    liked = true;
+  } catch (err: any) {
+    console.error('Error toggling like:', err);
+    return res.status(500).json({ error: 'Failed to toggle like' });
   }
+}
 
-  res.json({ success: true, liked, likesCount: movie.likesCount });
+app.post('/api/movies/:id/like', handleToggleLike);
+app.post('/api/series/:id/like', handleToggleLike);
+app.post('/api/content/:id/like', handleToggleLike);
+
+app.get('/api/likes', (req: Request, res: Response) => {
+  const userId = req.query.userId as string;
+  if (!userId) {
+    return res.json([]);
+  }
+  const userLikes = likedItems.filter(l => l.userId === userId).map(l => l.contentId);
+  res.json(userLikes);
 });
 
 // Series
@@ -1807,6 +3007,13 @@ app.get('/api/series', (req: Request, res: Response) => {
   if (genre && genre !== 'All') {
     result = result.filter(s => s.genre.includes(String(genre)));
   }
+
+  // Prioritize newest and recently modified series first
+  result.sort((a, b) => {
+    const timeA = new Date((a as any).updatedAt || (a as any).modifiedAt || a.createdAt || (a as any).publishedAt || 0).getTime();
+    const timeB = new Date((b as any).updatedAt || (b as any).modifiedAt || b.createdAt || (b as any).publishedAt || 0).getTime();
+    return timeB - timeA;
+  });
 
   res.json(result);
 });
@@ -1884,7 +3091,9 @@ app.post('/api/series', (req: Request, res: Response) => {
     createdAt: new Date().toISOString()
   };
   episodesList.push(defaultEpisode);
+  deletedContentIds.delete(newSeries.id);
   saveContentStore();
+  persistContentItemToFirestore(mapToContentItem(newSeries)).catch(() => {});
 
   res.json({ success: true, series: newSeries });
 });
@@ -1892,8 +3101,10 @@ app.post('/api/series', (req: Request, res: Response) => {
 app.put('/api/series/:id', (req: Request, res: Response) => {
   const index = seriesList.findIndex(s => s.id === req.params.id);
   if (index === -1) return res.status(404).json({ error: 'Series not found' });
+  deletedContentIds.delete(req.params.id);
   seriesList[index] = { ...seriesList[index], ...req.body, updatedAt: new Date().toISOString() };
   saveContentStore();
+  persistContentItemToFirestore(mapToContentItem(seriesList[index])).catch(() => {});
   res.json({ success: true, series: seriesList[index] });
 });
 
@@ -1901,21 +3112,57 @@ app.delete('/api/series/:id', (req: Request, res: Response) => {
   const index = seriesList.findIndex(s => s.id === req.params.id);
   if (index === -1) return res.status(404).json({ error: 'Series not found' });
   const deleted = seriesList.splice(index, 1);
+  deletedContentIds.add(req.params.id);
   // cleanup seasons and episodes
   seasonsList = seasonsList.filter(sn => sn.seriesId !== req.params.id);
   episodesList = episodesList.filter(ep => ep.seriesId !== req.params.id);
   saveContentStore();
+  deleteContentItemFromFirestore(req.params.id).catch(() => {});
   res.json({ success: true, series: deleted[0] });
 });
 
 // Episodes and Seasons management
+app.get('/api/series/:id/seasons', (req: Request, res: Response) => {
+  const { id } = req.params;
+  const seasons = seasonsList
+    .filter(s => s.seriesId === id)
+    .map(s => ({
+      ...s,
+      episodesCount: episodesList.filter(e => e.seriesId === id && (e.seasonId === s.id || (e.seasonNumber || 1) === s.seasonNumber)).length
+    }))
+    .sort((a, b) => a.seasonNumber - b.seasonNumber);
+  const episodes = episodesList
+    .filter(e => e.seriesId === id)
+    .sort((a, b) => ((a.seasonNumber || 1) - (b.seasonNumber || 1)) || (a.episodeNumber - b.episodeNumber));
+
+  if (req.query.format === 'array') {
+    return res.json(seasons);
+  }
+  res.json({ seasons, episodes });
+});
+
 app.post('/api/seasons', (req: Request, res: Response) => {
-  const { seriesId, seasonNumber, title } = req.body;
+  const { seriesId, seasonNumber, seasonName, title } = req.body;
+  const sNum = Number(seasonNumber) || 1;
+  const sName = seasonName || title || `Season ${sNum}`;
+  
+  const existing = seasonsList.find(s => s.seriesId === seriesId && (s.id === req.body.id || s.seasonNumber === sNum));
+  if (existing) {
+    existing.seasonNumber = sNum;
+    existing.seasonName = sName;
+    existing.title = title || sName;
+    saveContentStore();
+    const parentSeries = seriesList.find(s => s.id === seriesId);
+    if (parentSeries) persistContentItemToFirestore(mapToContentItem(parentSeries)).catch(() => {});
+    return res.json({ success: true, season: existing });
+  }
+
   const newSeason: Season = {
-    id: 'season-' + Date.now(),
+    id: req.body.id || 'season-' + Date.now(),
     seriesId,
-    seasonNumber: Number(seasonNumber) || 1,
-    title: title || `Season ${seasonNumber || 1}`,
+    seasonNumber: sNum,
+    seasonName: sName,
+    title: title || sName,
     episodesCount: 0
   };
   seasonsList.push(newSeason);
@@ -1924,16 +3171,129 @@ app.post('/api/seasons', (req: Request, res: Response) => {
   const series = seriesList.find(s => s.id === seriesId);
   if (series) {
     series.seasonsCount = seasonsList.filter(s => s.seriesId === seriesId).length;
+    persistContentItemToFirestore(mapToContentItem(series)).catch(() => {});
   }
   saveContentStore();
   res.json({ success: true, season: newSeason });
 });
 
-app.post('/api/episodes', (req: Request, res: Response) => {
+app.put('/api/seasons/:id', (req: Request, res: Response) => {
+  const season = seasonsList.find(s => s.id === req.params.id);
+  if (!season) return res.status(404).json({ error: 'Season not found' });
+  
+  if (req.body.seasonNumber !== undefined) season.seasonNumber = Number(req.body.seasonNumber);
+  if (req.body.seasonName) season.seasonName = req.body.seasonName;
+  if (req.body.title) season.title = req.body.title;
+  
+  saveContentStore();
+  const parentSeries = seriesList.find(s => s.id === season.seriesId);
+  if (parentSeries) persistContentItemToFirestore(mapToContentItem(parentSeries)).catch(() => {});
+  res.json({ success: true, season });
+});
+
+app.delete('/api/seasons/:id', (req: Request, res: Response) => {
+  const sIdx = seasonsList.findIndex(s => s.id === req.params.id);
+  if (sIdx === -1) return res.status(404).json({ error: 'Season not found' });
+  const [deletedSeason] = seasonsList.splice(sIdx, 1);
+  
+  // Remove episodes belonging specifically to this season
+  episodesList = episodesList.filter(e => e.seasonId !== req.params.id);
+  
+  // update series count
+  const series = seriesList.find(s => s.id === deletedSeason.seriesId);
+  if (series) {
+    series.seasonsCount = Math.max(1, seasonsList.filter(s => s.seriesId === deletedSeason.seriesId).length);
+    persistContentItemToFirestore(mapToContentItem(series)).catch(() => {});
+  }
+  saveContentStore();
+  res.json({ success: true, season: deletedSeason });
+});
+
+app.post('/api/series/:id/seasons/:seasonId/episodes', (req: Request, res: Response) => {
+  const { id: seriesId, seasonId } = req.params;
+  const season = seasonsList.find(s => s.id === seasonId && s.seriesId === seriesId);
+  
+  // Detect highest existing episode number in this season
+  const existingSeasonEps = episodesList.filter(e => e.seriesId === seriesId && e.seasonId === seasonId);
+  const highestEpNum = existingSeasonEps.reduce((max, ep) => Math.max(max, ep.episodeNumber || 0), 0);
+  const nextEpNum = req.body.episodeNumber !== undefined ? Number(req.body.episodeNumber) : (highestEpNum + 1);
+
   const newEpisode: Episode = {
-    id: 'ep-' + Date.now(),
+    id: req.body.id || 'ep-' + Date.now(),
+    seriesId,
+    seasonId,
+    seasonNumber: season ? season.seasonNumber : 1,
+    seasonName: season ? (season.seasonName || `Season ${season.seasonNumber}`) : 'Season 1',
+    episodeNumber: nextEpNum,
+    title: req.body.title || `Episode ${nextEpNum}`,
+    description: req.body.description || '',
+    thumbnail: req.body.thumbnail || '',
+    videoUrl: req.body.videoUrl || '',
+    hlsUrl: req.body.hlsUrl,
+    duration: Number(req.body.duration) || 45,
+    skipIntroSec: Number(req.body.skipIntroSec) || 0,
+    createdAt: new Date().toISOString()
+  };
+
+  episodesList.push(newEpisode);
+
+  if (season) {
+    season.episodesCount = episodesList.filter(e => e.seasonId === seasonId).length;
+  }
+  saveContentStore();
+  const parentSeries = seriesList.find(s => s.id === seriesId);
+  if (parentSeries) persistContentItemToFirestore(mapToContentItem(parentSeries)).catch(() => {});
+  res.json({ success: true, episode: newEpisode });
+});
+
+app.post('/api/series/:id/seasons/:seasonId/episodes/batch', (req: Request, res: Response) => {
+  const { id: seriesId, seasonId } = req.params;
+  const season = seasonsList.find(s => s.id === seasonId && s.seriesId === seriesId);
+  const incomingEps = Array.isArray(req.body.episodes) ? req.body.episodes : [];
+
+  const existingSeasonEps = episodesList.filter(e => e.seriesId === seriesId && e.seasonId === seasonId);
+  let highestEpNum = existingSeasonEps.reduce((max, ep) => Math.max(max, ep.episodeNumber || 0), 0);
+
+  const createdEps: Episode[] = [];
+  incomingEps.forEach((ep: any) => {
+    highestEpNum += 1;
+    const epNum = ep.episodeNumber !== undefined ? Number(ep.episodeNumber) : highestEpNum;
+    const newEp: Episode = {
+      id: ep.id || `ep-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+      seriesId,
+      seasonId,
+      seasonNumber: season ? season.seasonNumber : 1,
+      seasonName: season ? (season.seasonName || `Season ${season.seasonNumber}`) : 'Season 1',
+      episodeNumber: epNum,
+      title: ep.title || `Episode ${epNum}`,
+      description: ep.description || '',
+      thumbnail: ep.thumbnail || '',
+      videoUrl: ep.videoUrl || '',
+      duration: Number(ep.duration) || 45,
+      skipIntroSec: Number(ep.skipIntroSec) || 0,
+      createdAt: new Date().toISOString()
+    };
+    episodesList.push(newEp);
+    createdEps.push(newEp);
+  });
+
+  if (season) {
+    season.episodesCount = episodesList.filter(e => e.seasonId === seasonId).length;
+  }
+  saveContentStore();
+  const parentSeries = seriesList.find(s => s.id === seriesId);
+  if (parentSeries) persistContentItemToFirestore(mapToContentItem(parentSeries)).catch(() => {});
+  res.json({ success: true, count: createdEps.length, episodes: createdEps });
+});
+
+app.post('/api/episodes', (req: Request, res: Response) => {
+  const season = seasonsList.find(s => s.id === req.body.seasonId);
+  const newEpisode: Episode = {
+    id: req.body.id || 'ep-' + Date.now(),
     seriesId: req.body.seriesId,
     seasonId: req.body.seasonId,
+    seasonNumber: req.body.seasonNumber || (season ? season.seasonNumber : 1),
+    seasonName: req.body.seasonName || (season ? season.seasonName : 'Season 1'),
     episodeNumber: Number(req.body.episodeNumber) || 1,
     title: req.body.title || `Episode ${req.body.episodeNumber}`,
     description: req.body.description || '',
@@ -1947,20 +3307,45 @@ app.post('/api/episodes', (req: Request, res: Response) => {
   episodesList.push(newEpisode);
 
   // update season count
-  const season = seasonsList.find(s => s.id === newEpisode.seasonId);
   if (season) {
     season.episodesCount = episodesList.filter(e => e.seasonId === season.id).length;
   }
   saveContentStore();
+  const parentSeries = seriesList.find(s => s.id === req.body.seriesId);
+  if (parentSeries) persistContentItemToFirestore(mapToContentItem(parentSeries)).catch(() => {});
 
   res.json({ success: true, episode: newEpisode });
+});
+
+app.put('/api/episodes/:id', (req: Request, res: Response) => {
+  const index = episodesList.findIndex(e => e.id === req.params.id);
+  if (index === -1) return res.status(404).json({ error: 'Episode not found' });
+  
+  episodesList[index] = {
+    ...episodesList[index],
+    ...req.body,
+    id: episodesList[index].id,
+    seriesId: episodesList[index].seriesId
+  };
+  
+  saveContentStore();
+  const parentSeries = seriesList.find(s => s.id === episodesList[index].seriesId);
+  if (parentSeries) persistContentItemToFirestore(mapToContentItem(parentSeries)).catch(() => {});
+  res.json({ success: true, episode: episodesList[index] });
 });
 
 app.delete('/api/episodes/:id', (req: Request, res: Response) => {
   const index = episodesList.findIndex(e => e.id === req.params.id);
   if (index === -1) return res.status(404).json({ error: 'Episode not found' });
   const deleted = episodesList.splice(index, 1)[0];
+  
+  const season = seasonsList.find(s => s.id === deleted.seasonId);
+  if (season) {
+    season.episodesCount = episodesList.filter(e => e.seasonId === season.id).length;
+  }
   saveContentStore();
+  const parentSeries = seriesList.find(s => s.id === deleted.seriesId);
+  if (parentSeries) persistContentItemToFirestore(mapToContentItem(parentSeries)).catch(() => {});
   res.json({ success: true, episode: deleted });
 });
 
@@ -2066,39 +3451,85 @@ app.post('/api/watchlist/toggle', (req: Request, res: Response) => {
   res.json({ success: true, inWatchlist });
 });
 
-// Reviews and Ratings
+// Reviews and Ratings (Server-Side Persistent with Firestore & Disk backup)
 app.get('/api/reviews/:contentId', (req: Request, res: Response) => {
-  const contentReviews = reviews.filter(r => r.contentId === req.params.contentId && r.approved);
+  const contentId = req.params.contentId;
+  const contentReviews = reviews
+    .filter(r => r.contentId === contentId && r.approved !== false)
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   res.json(contentReviews);
 });
 
-app.post('/api/reviews', (req: Request, res: Response) => {
-  const { userId = 'usr_demo', username, userImage, contentId, rating, review } = req.body;
-  if (!contentId || !rating) return res.status(400).json({ error: 'contentId and rating required' });
+app.post('/api/reviews', async (req: Request, res: Response) => {
+  try {
+    const { userId = 'usr_demo', username, userImage, contentId, rating, review } = req.body;
+    if (!contentId) {
+      return res.status(400).json({ error: 'contentId is required' });
+    }
+    const numRating = Number(rating);
+    if (isNaN(numRating) || numRating < 1 || numRating > 10) {
+      return res.status(400).json({ error: 'rating must be an integer between 1 and 10' });
+    }
 
-  const newReview: ContentRatingReview = {
-    id: 'rev-' + Date.now(),
-    userId,
-    username: username || 'Pi Pioneer',
-    userImage,
-    contentId,
-    rating: Number(rating),
-    review: review || '',
-    createdAt: new Date().toISOString(),
-    approved: true
-  };
+    const movie = movies.find(m => m.id === contentId);
+    const series = seriesList.find(s => s.id === contentId);
+    const targetItem = movie || series;
+    if (!targetItem) {
+      return res.status(404).json({ error: 'Target movie or TV series not found' });
+    }
 
-  reviews.unshift(newReview);
+    const safeUsername = String(username || 'Pi Pioneer').slice(0, 80);
+    const safeReviewText = String(review || '').slice(0, 2000);
+    const nowIso = new Date().toISOString();
 
-  // update movie rating average
-  const movie = movies.find(m => m.id === contentId);
-  if (movie) {
-    const allRatings = reviews.filter(r => r.contentId === contentId).map(r => r.rating);
-    const avg = allRatings.reduce((a, b) => a + b, 0) / allRatings.length;
-    movie.rating = Number(avg.toFixed(1));
+    // Check if user already reviewed this content -> update existing review
+    const existingIdx = reviews.findIndex(r => r.userId === userId && r.contentId === contentId);
+    let targetReview: ContentRatingReview;
+
+    if (existingIdx > -1) {
+      targetReview = {
+        ...reviews[existingIdx],
+        rating: Math.round(numRating),
+        review: safeReviewText,
+        username: safeUsername,
+        userImage: userImage || reviews[existingIdx].userImage,
+        approved: true
+      };
+      reviews[existingIdx] = targetReview;
+    } else {
+      targetReview = {
+        id: `rev-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+        userId,
+        username: safeUsername,
+        userImage,
+        contentId,
+        rating: Math.round(numRating),
+        review: safeReviewText,
+        createdAt: nowIso,
+        approved: true
+      };
+      reviews.unshift(targetReview);
+    }
+
+    // Server-side average rating recalculation
+    const allRatings = reviews.filter(r => r.contentId === contentId && typeof r.rating === 'number').map(r => r.rating);
+    const avg = Number((allRatings.reduce((a, b) => a + b, 0) / allRatings.length).toFixed(1));
+    targetItem.rating = avg;
+
+    saveInteractionsStore();
+    saveContentStore();
+    syncReviewToFirestore(targetReview).catch(() => {});
+
+    return res.json({
+      success: true,
+      review: targetReview,
+      averageRating: avg,
+      totalReviews: allRatings.length
+    });
+  } catch (err: any) {
+    console.error('Error recording review/rating:', err);
+    return res.status(500).json({ error: 'Failed to record review' });
   }
-
-  res.json({ success: true, review: newReview });
 });
 
 // Active Ads & Impressions
@@ -2166,37 +3597,128 @@ app.post('/api/notifications/read', (req: Request, res: Response) => {
 });
 
 // PI NETWORK PAYMENT INTEGRATION
-// Helper to retrieve Pi Server API Key strictly from server environment variable
+// Helper to retrieve Pi Server API Key strictly from server environment variables/secrets
 const getPiServerApiKey = (): string => {
-  return (process.env.PI_SERVER_API_KEY || process.env.PI_NETWORK_API_KEY || '').trim();
+  let key = (
+    process.env.PI_SERVER_API_KEY ||
+    process.env.PI_NETWORK_API_KEY ||
+    process.env.PI_API_KEY ||
+    process.env.PI_SERVER_KEY ||
+    process.env.PI_API_SECRET ||
+    process.env.PI_DEVELOPER_KEY ||
+    process.env.PI_KEY ||
+    process.env.PI_SECRET_KEY ||
+    process.env.PI_API_SERVER_KEY ||
+    process.env.PI_NETWORK_SERVER_KEY ||
+    process.env.PISERVER_API_KEY ||
+    process.env.PISERVER_KEY ||
+    process.env.MINEPI_API_KEY ||
+    process.env.MINEPI_SERVER_KEY ||
+    ''
+  ).trim();
+
+  // If not found in process.env, check root container .dev.env.json (AI Studio runtime secrets file)
+  if (!key) {
+    try {
+      const devEnvPath = path.resolve(process.cwd(), '..', '.dev.env.json');
+      if (fs.existsSync(devEnvPath)) {
+        const devEnv = JSON.parse(fs.readFileSync(devEnvPath, 'utf-8'));
+        key = (
+          devEnv.PI_SERVER_API_KEY ||
+          devEnv.PI_NETWORK_API_KEY ||
+          devEnv.PI_API_KEY ||
+          devEnv.PI_SERVER_KEY ||
+          devEnv.PI_API_SECRET ||
+          devEnv.PI_DEVELOPER_KEY ||
+          devEnv.PI_KEY ||
+          devEnv.PI_SECRET_KEY ||
+          devEnv.PI_API_SERVER_KEY ||
+          devEnv.PI_NETWORK_SERVER_KEY ||
+          devEnv.PISERVER_API_KEY ||
+          devEnv.MINEPI_API_KEY ||
+          devEnv.MINEPI_SERVER_KEY ||
+          ''
+        ).trim();
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  // Check fallback from appSettings if configured in admin/store
+  if (!key && (appSettings as any)?.piServerApiKey) {
+    key = String((appSettings as any).piServerApiKey).trim();
+  }
+
+  // Strip wrapping quotes if user pasted with quotes
+  if ((key.startsWith('"') && key.endsWith('"')) || (key.startsWith("'") && key.endsWith("'"))) {
+    key = key.slice(1, -1).trim();
+  }
+  // Strip redundant "Key " prefix if pasted as "Key <token>"
+  if (key.startsWith('Key ')) {
+    key = key.slice(4).trim();
+  }
+  return key;
 };
 
-// Requirement 4: Backend uses Pi Server API Key from environment variable to approve payment
+// Health and configuration check endpoint for Pi payment integration (no secret revealed)
+app.get('/api/pi/status', (_req: Request, res: Response) => {
+  const hasKey = Boolean(getPiServerApiKey());
+  res.json({
+    success: true,
+    serverApiKeyConfigured: hasKey,
+    piServerApiKeyStatus: hasKey ? 'PRESENT' : 'MISSING',
+    piApiBaseUrl: 'https://api.minepi.com',
+    targetNetwork: 'Production (Mainnet)',
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Safe diagnostic check reporting only whether required Pi Server API Key is PRESENT or MISSING
+app.get('/api/pi/diagnostic', (_req: Request, res: Response) => {
+  const hasKey = Boolean(getPiServerApiKey());
+  res.json({
+    status: hasKey ? 'PRESENT' : 'MISSING',
+    variableName: 'PI_SERVER_API_KEY',
+    targetApi: 'https://api.minepi.com/v2/payments/{paymentId}/approve',
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Requirement 4 & 6 & 11 & 12: Backend uses Pi Server API Key from environment to approve payment
 // POST https://api.minepi.com/v2/payments/{paymentId}/approve
 app.post(['/api/pi/payments/approve', '/api/pi/approve-payment'], async (req: Request, res: Response) => {
+  const requestTimestamp = new Date().toISOString();
   try {
     const { paymentId, plan = 'monthly', userId } = req.body;
-    if (!paymentId) {
+    if (!paymentId || typeof paymentId !== 'string') {
+      console.warn(`[Pi Payment Approval] [${requestTimestamp}] Rejected: Missing or invalid paymentId.`);
       return res.status(400).json({ success: false, error: 'paymentId is required for approval.' });
     }
 
+    console.info(`[Pi Payment Approval] [${requestTimestamp}] Received request for paymentId: "${paymentId}", plan: "${plan}"`);
+
     const piServerApiKey = getPiServerApiKey();
     if (!piServerApiKey) {
-      console.error('[Pi Payment Approval] Missing PI_SERVER_API_KEY environment variable.');
+      console.error(`[Pi Payment Approval] [${requestTimestamp}] PI_SERVER_API_KEY is not configured in server environment.`);
       return res.status(500).json({
         success: false,
-        error: 'Pi Server API Key is not configured on the backend server.'
+        error: 'Pi Server API Key is not configured on the backend server. Please provide PI_SERVER_API_KEY in the Secrets panel.',
+        paymentId,
+        timestamp: requestTimestamp
       });
     }
 
-    console.info(`[Pi Payment] Approving payment ${paymentId} via Pi Network API...`);
+    console.info(`[Pi Payment Approval] [${requestTimestamp}] Calling Pi Network API POST /v2/payments/${paymentId}/approve...`);
 
     const piApproveRes = await fetch(`https://api.minepi.com/v2/payments/${encodeURIComponent(paymentId)}/approve`, {
       method: 'POST',
       headers: {
         'Authorization': `Key ${piServerApiKey}`,
         'Content-Type': 'application/json'
-      }
+      },
+      body: JSON.stringify({}),
+      signal: AbortSignal.timeout(25000)
     });
 
     const responseText = await piApproveRes.text();
@@ -2207,26 +3729,39 @@ app.post(['/api/pi/payments/approve', '/api/pi/approve-payment'], async (req: Re
       responseData = { message: responseText };
     }
 
-    if (!piApproveRes.ok) {
-      // If already developer_approved, continue gracefully
-      const isAlreadyApproved =
-        responseData?.status?.developer_approved ||
-        String(responseData?.message || '').toLowerCase().includes('already approved');
+    console.info(`[Pi Payment Approval] [${requestTimestamp}] Pi API response HTTP ${piApproveRes.status} for paymentId: "${paymentId}"`);
 
-      if (!isAlreadyApproved) {
-        console.error(`[Pi Payment Approval] Pi API rejected approval (${piApproveRes.status}):`, responseData);
-        return res.status(piApproveRes.status).json({
-          success: false,
-          error: responseData?.message || responseData?.error || `Pi payment approval failed with status ${piApproveRes.status}`
-        });
-      }
-      console.info(`[Pi Payment] Payment ${paymentId} was already approved.`);
+    // Requirement 16: Idempotent handling if already developer_approved
+    const isAlreadyApproved =
+      responseData?.status?.developer_approved === true ||
+      responseData?.developer_approved === true ||
+      String(responseData?.message || '').toLowerCase().includes('already approved') ||
+      String(responseData?.error || '').toLowerCase().includes('already approved');
+
+    if (!piApproveRes.ok && !isAlreadyApproved) {
+      const safeErrorMessage =
+        responseData?.error_description ||
+        responseData?.error ||
+        responseData?.message ||
+        `Pi Platform API returned HTTP ${piApproveRes.status}`;
+
+      console.error(`[Pi Payment Approval] [${requestTimestamp}] Approval failed for paymentId "${paymentId}": ${safeErrorMessage}`);
+      return res.status(piApproveRes.status >= 400 && piApproveRes.status < 600 ? piApproveRes.status : 400).json({
+        success: false,
+        error: safeErrorMessage,
+        paymentId,
+        timestamp: requestTimestamp
+      });
     }
+
+    console.info(`[Pi Payment Approval] [${requestTimestamp}] Approval SUCCESS for paymentId: "${paymentId}" (alreadyApproved: ${isAlreadyApproved})`);
 
     // Save or update pending payment entry
     let payment = payments.find(p => p.piPaymentId === paymentId || p.transactionId === paymentId);
     if (payment) {
-      payment.status = 'approved';
+      if (payment.status !== 'completed') {
+        payment.status = 'approved';
+      }
     } else {
       const pricePi = plan === 'annual' ? appSettings.annualPricePi : appSettings.monthlyPricePi;
       payment = {
@@ -2238,7 +3773,7 @@ app.post(['/api/pi/payments/approve', '/api/pi/approve-payment'], async (req: Re
         currency: 'Pi',
         status: 'approved',
         plan,
-        createdAt: new Date().toISOString()
+        createdAt: requestTimestamp
       };
       payments.unshift(payment);
     }
@@ -2247,37 +3782,50 @@ app.post(['/api/pi/payments/approve', '/api/pi/approve-payment'], async (req: Re
       success: true,
       message: 'Payment successfully approved by PiFlix+ server.',
       paymentId,
-      status: 'approved'
+      status: 'approved',
+      timestamp: requestTimestamp
     });
   } catch (err: any) {
-    console.error('[Pi Payment Approval Error]:', err);
+    const isTimeout = err?.name === 'TimeoutError' || String(err?.message || '').includes('timed out');
+    const safeError = isTimeout
+      ? 'Pi Platform API request timed out during approval.'
+      : (err?.message || 'Server error during Pi payment approval.');
+    console.error(`[Pi Payment Approval Error] [${requestTimestamp}]:`, safeError);
     return res.status(500).json({
       success: false,
-      error: err?.message || 'Server error during Pi payment approval.'
+      error: safeError,
+      timestamp: requestTimestamp
     });
   }
 });
 
-// Requirement 6: Backend uses Pi Server API Key to complete payment with txid
+// Requirement 6 & 13 & 14: Backend uses Pi Server API Key to complete payment with txid
 // POST https://api.minepi.com/v2/payments/{paymentId}/complete
-// Requirement 7: Only after successful completion should the app confirm purchase and unlock Premium/VIP
+// Premium access MUST only be activated after the backend receives a successful response from the Pi /complete endpoint
 app.post(['/api/pi/payments/complete', '/api/pi/complete-payment'], async (req: Request, res: Response) => {
+  const requestTimestamp = new Date().toISOString();
   try {
     const { paymentId, txid, plan = 'monthly', userId } = req.body;
     if (!paymentId || !txid) {
+      console.warn(`[Pi Payment Completion] [${requestTimestamp}] Missing paymentId or txid.`);
       return res.status(400).json({ success: false, error: 'Both paymentId and txid are required for completion.' });
     }
 
+    console.info(`[Pi Payment Completion] [${requestTimestamp}] Received request for paymentId: "${paymentId}", txid: "${txid}"`);
+
     const piServerApiKey = getPiServerApiKey();
     if (!piServerApiKey) {
-      console.error('[Pi Payment Completion] Missing PI_SERVER_API_KEY environment variable.');
+      console.error(`[Pi Payment Completion] [${requestTimestamp}] Missing PI_SERVER_API_KEY in server environment.`);
       return res.status(500).json({
         success: false,
-        error: 'Pi Server API Key is not configured on the backend server.'
+        error: 'Pi Server API Key is not configured on the backend server. Please provide PI_SERVER_API_KEY in the Secrets panel.',
+        paymentId,
+        txid,
+        timestamp: requestTimestamp
       });
     }
 
-    console.info(`[Pi Payment] Completing payment ${paymentId} with txid ${txid} via Pi Network API...`);
+    console.info(`[Pi Payment Completion] [${requestTimestamp}] Calling Pi Network API POST /v2/payments/${paymentId}/complete...`);
 
     const piCompleteRes = await fetch(`https://api.minepi.com/v2/payments/${encodeURIComponent(paymentId)}/complete`, {
       method: 'POST',
@@ -2285,7 +3833,8 @@ app.post(['/api/pi/payments/complete', '/api/pi/complete-payment'], async (req: 
         'Authorization': `Key ${piServerApiKey}`,
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({ txid })
+      body: JSON.stringify({ txid }),
+      signal: AbortSignal.timeout(25000)
     });
 
     const responseText = await piCompleteRes.text();
@@ -2296,21 +3845,33 @@ app.post(['/api/pi/payments/complete', '/api/pi/complete-payment'], async (req: 
       responseData = { message: responseText };
     }
 
-    if (!piCompleteRes.ok) {
-      // If already developer_completed, we can proceed to grant access
-      const isAlreadyCompleted =
-        responseData?.status?.developer_completed ||
-        String(responseData?.message || '').toLowerCase().includes('already completed');
+    console.info(`[Pi Payment Completion] [${requestTimestamp}] Pi API response HTTP ${piCompleteRes.status} for paymentId: "${paymentId}"`);
 
-      if (!isAlreadyCompleted) {
-        console.error(`[Pi Payment Completion] Pi API rejected completion (${piCompleteRes.status}):`, responseData);
-        return res.status(piCompleteRes.status).json({
-          success: false,
-          error: responseData?.message || responseData?.error || `Pi payment completion failed with status ${piCompleteRes.status}`
-        });
-      }
-      console.info(`[Pi Payment] Payment ${paymentId} was already completed.`);
+    // Requirement 16: Idempotent handling if already developer_completed
+    const isAlreadyCompleted =
+      responseData?.status?.developer_completed === true ||
+      responseData?.developer_completed === true ||
+      String(responseData?.message || '').toLowerCase().includes('already completed') ||
+      String(responseData?.error || '').toLowerCase().includes('already completed');
+
+    if (!piCompleteRes.ok && !isAlreadyCompleted) {
+      const safeErrorMessage =
+        responseData?.error_description ||
+        responseData?.error ||
+        responseData?.message ||
+        `Pi Platform API returned HTTP ${piCompleteRes.status}`;
+
+      console.error(`[Pi Payment Completion] [${requestTimestamp}] Completion failed for paymentId "${paymentId}": ${safeErrorMessage}`);
+      return res.status(piCompleteRes.status >= 400 && piCompleteRes.status < 600 ? piCompleteRes.status : 400).json({
+        success: false,
+        error: safeErrorMessage,
+        paymentId,
+        txid,
+        timestamp: requestTimestamp
+      });
     }
+
+    console.info(`[Pi Payment Completion] [${requestTimestamp}] Completion SUCCESS for paymentId: "${paymentId}", txid: "${txid}"`);
 
     // Only after successful completion should the app confirm the purchase and unlock the Premium/VIP content
     const selectedPlan = plan === 'annual' ? 'annual' : 'monthly';
@@ -2332,7 +3893,7 @@ app.post(['/api/pi/payments/complete', '/api/pi/complete-payment'], async (req: 
         currency: 'Pi',
         status: 'completed',
         plan: selectedPlan,
-        createdAt: new Date().toISOString()
+        createdAt: requestTimestamp
       };
       payments.unshift(payment);
     }
@@ -2370,7 +3931,7 @@ app.post(['/api/pi/payments/complete', '/api/pi/complete-payment'], async (req: 
       user.subscriptionExpiry = expiry.toISOString();
     }
 
-    // Send confirmation notification to user (Requirement 4)
+    // Send confirmation notification to user
     notifications.unshift({
       id: 'notif_vip_' + (user ? user.id : targetUserId) + '_' + Date.now(),
       userId: user ? user.id : (targetUserId || 'usr_demo'),
@@ -2378,7 +3939,7 @@ app.post(['/api/pi/payments/complete', '/api/pi/complete-payment'], async (req: 
       message: 'Your PiFlix+ Premium membership has been successfully activated.',
       type: 'premium',
       targetTab: 'premium',
-      createdAt: new Date().toISOString(),
+      createdAt: requestTimestamp,
       read: false,
       readBy: [],
       metadata: {
@@ -2397,16 +3958,22 @@ app.post(['/api/pi/payments/complete', '/api/pi/complete-payment'], async (req: 
       user
     });
   } catch (err: any) {
-    console.error('[Pi Payment Completion Error]:', err);
+    const isTimeout = err?.name === 'TimeoutError' || String(err?.message || '').includes('timed out');
+    const safeError = isTimeout
+      ? 'Pi Platform API request timed out during completion.'
+      : (err?.message || 'Server error during Pi payment completion.');
+    console.error(`[Pi Payment Completion Error] [${requestTimestamp}]:`, safeError);
     return res.status(500).json({
       success: false,
-      error: err?.message || 'Server error during Pi payment completion.'
+      error: safeError,
+      timestamp: requestTimestamp
     });
   }
 });
 
-// Requirement 8: Handle onIncompletePaymentFound during authentication
+// Requirement 15: Handle onIncompletePaymentFound safely
 app.post('/api/pi/payments/incomplete', async (req: Request, res: Response) => {
+  const requestTimestamp = new Date().toISOString();
   try {
     const { payment, userId } = req.body;
     if (!payment) {
@@ -2416,25 +3983,28 @@ app.post('/api/pi/payments/incomplete', async (req: Request, res: Response) => {
     const paymentId = payment.identifier || payment.id || payment.paymentId;
     const txid = payment.transaction?.txid;
     const isCompleted = payment.status?.developer_completed;
+    const isApproved = payment.status?.developer_approved;
     const piServerApiKey = getPiServerApiKey();
 
-    console.info(`[Pi Payment] Incomplete payment reported: ${paymentId}, txid: ${txid}, completed: ${isCompleted}`);
+    console.info(`[Pi Payment] [${requestTimestamp}] Incomplete payment reported: ${paymentId}, txid: ${txid}, approved: ${isApproved}, completed: ${isCompleted}`);
 
     if (paymentId && txid && !isCompleted && piServerApiKey) {
-      console.info(`[Pi Payment] Auto-completing pending incomplete payment ${paymentId}...`);
+      console.info(`[Pi Payment] [${requestTimestamp}] Auto-completing pending incomplete payment ${paymentId}...`);
       const completeRes = await fetch(`https://api.minepi.com/v2/payments/${encodeURIComponent(paymentId)}/complete`, {
         method: 'POST',
         headers: {
           'Authorization': `Key ${piServerApiKey}`,
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ txid })
+        body: JSON.stringify({ txid }),
+        signal: AbortSignal.timeout(25000)
       });
 
       if (completeRes.ok) {
-        console.info(`[Pi Payment] Incomplete payment ${paymentId} completed successfully.`);
-        if (userId) {
-          const user = users.find(u => u.id === userId);
+        console.info(`[Pi Payment] [${requestTimestamp}] Incomplete payment ${paymentId} completed successfully.`);
+        const targetUserId = userId || payment.metadata?.userId;
+        if (targetUserId) {
+          const user = users.find(u => u.id === targetUserId);
           if (user) {
             user.premiumStatus = true;
             user.subscriptionPlan = payment.metadata?.plan || 'monthly';
@@ -2444,9 +4014,9 @@ app.post('/api/pi/payments/incomplete', async (req: Request, res: Response) => {
       }
     }
 
-    return res.json({ success: true, completed: Boolean(isCompleted), paymentId });
+    return res.json({ success: true, completed: Boolean(isCompleted), approved: Boolean(isApproved), paymentId });
   } catch (err: any) {
-    console.error('[Pi Incomplete Payment Handler Error]:', err);
+    console.error(`[Pi Incomplete Payment Handler Error] [${requestTimestamp}]:`, err?.message || err);
     return res.status(500).json({ success: false, error: err?.message || 'Failed to process incomplete payment' });
   }
 });
@@ -2546,6 +4116,7 @@ app.get('/api/admin/overview', verifyAdmin, (req: Request, res: Response) => {
   const totalWatchTimeHours = Math.round(totalViews * 0.42);
   const piRevenue = payments.filter(p => p.status === 'completed').reduce((acc, p) => acc + p.amount, 0);
   const premiumCount = users.filter(u => u.premiumStatus).length;
+  const visitorAnalytics = computeVisitorAnalytics();
 
   res.json({
     totalUsers: users.length,
@@ -2560,12 +4131,120 @@ app.get('/api/admin/overview', verifyAdmin, (req: Request, res: Response) => {
     adViews: adImpressionsCount,
     recentPayments: payments.slice(0, 10),
     topMovies: [...movies].sort((a, b) => b.viewsCount - a.viewsCount).slice(0, 5),
-    topSeries: [...seriesList].sort((a, b) => b.viewsCount - a.viewsCount).slice(0, 5)
+    topSeries: [...seriesList].sort((a, b) => b.viewsCount - a.viewsCount).slice(0, 5),
+    visitorAnalytics
   });
+});
+
+// --------------------------------------------------------------------------
+// PUBLIC VISITOR TRACKING ENDPOINT (Privacy-preserving session tracking)
+// --------------------------------------------------------------------------
+app.post('/api/analytics/record-visit', async (req: Request, res: Response) => {
+  try {
+    const authHeader = req.headers.authorization;
+    const token = authHeader ? authHeader.replace(/^Bearer\s+/i, '').trim() : '';
+
+    // If an administrator token or session is detected, do NOT count as public visitor
+    if (token) {
+      const adminUser = await verifyFirebaseToken(token);
+      if (adminUser) {
+        return res.json({ success: true, recorded: false, reason: 'admin_ignored' });
+      }
+    }
+    if (
+      token === 'admin_session' ||
+      token === 'admin' ||
+      req.headers['x-admin-request'] === 'true' ||
+      req.body.isAdmin === true
+    ) {
+      return res.json({ success: true, recorded: false, reason: 'admin_ignored' });
+    }
+
+    let visitorId = String(req.body.visitorId || '').trim();
+    if (!visitorId || !/^[a-zA-Z0-9_\-]+$/.test(visitorId) || visitorId.length > 128) {
+      return res.status(400).json({ error: 'Invalid visitor identifier' });
+    }
+
+    const rawSource = req.body.source;
+    const userAgent = req.headers['user-agent'] || '';
+    const referrer = (req.headers['referer'] || req.headers['referrer'] || '') as string;
+    const isPiUa = /pibrowser/i.test(userAgent);
+    const isPiReferrer = /minepi\.com/i.test(referrer);
+    const source: 'pi_browser' | 'external_web' =
+      (rawSource === 'pi_browser' || Boolean(req.body.piUserId) || Boolean(req.body.piUsername) || isPiUa || isPiReferrer)
+        ? 'pi_browser'
+        : 'external_web';
+
+    const piUserId = req.body.piUserId ? String(req.body.piUserId).slice(0, 128) : undefined;
+    const piUsername = req.body.piUsername ? String(req.body.piUsername).slice(0, 128) : undefined;
+
+    const nowIso = new Date().toISOString();
+    const todayStr = getFormattedDate();
+
+    let visitor = visitorsStore.get(visitorId);
+    if (visitor) {
+      if (source === 'pi_browser' || visitor.source === 'pi_browser') {
+        visitor.source = 'pi_browser';
+      }
+      if (piUserId) visitor.piUserId = piUserId;
+      if (piUsername) visitor.piUsername = piUsername;
+
+      if (!visitor.visitDates.includes(todayStr)) {
+        visitor.visitDates.push(todayStr);
+      }
+
+      const lastSeenMs = new Date(visitor.lastSeen).getTime();
+      if (Date.now() - lastSeenMs > 15 * 60 * 1000) {
+        visitor.visitCount += 1;
+      }
+      visitor.lastSeen = nowIso;
+      visitor.updatedAt = nowIso;
+    } else {
+      visitor = {
+        visitorId,
+        source,
+        piUserId,
+        piUsername,
+        firstSeen: nowIso,
+        lastSeen: nowIso,
+        visitDates: [todayStr],
+        visitCount: 1,
+        createdAt: nowIso,
+        updatedAt: nowIso
+      };
+      visitorsStore.set(visitorId, visitor);
+    }
+
+    saveVisitorsStore();
+    syncVisitorToFirestore(visitor).catch(() => {});
+
+    return res.json({ success: true, recorded: true, visitorId: visitor.visitorId });
+  } catch (err: any) {
+    console.error('Error recording visitor session:', err);
+    return res.status(500).json({ error: 'Failed to record visitor session' });
+  }
+});
+
+// --------------------------------------------------------------------------
+// ADMIN VISITOR ANALYTICS ENDPOINT (Strictly authenticated to administrators)
+// --------------------------------------------------------------------------
+app.get('/api/admin/analytics/visitors', verifyAdmin, (_req: Request, res: Response) => {
+  const analytics = computeVisitorAnalytics();
+  res.json(analytics);
 });
 
 app.get('/api/admin/users', verifyAdmin, (req: Request, res: Response) => {
   res.json(users);
+});
+
+app.post('/api/user/language', (req: Request, res: Response) => {
+  const { userId, language } = req.body;
+  if (!userId || !language) return res.status(400).json({ error: 'Missing userId or language' });
+  const user = users.find(u => u.id === userId);
+  if (user) {
+    (user as any).language = language;
+  }
+  res.json({ success: true, userId, language });
 });
 
 app.post('/api/admin/users/:id/toggle-premium', verifyAdmin, (req: Request, res: Response) => {

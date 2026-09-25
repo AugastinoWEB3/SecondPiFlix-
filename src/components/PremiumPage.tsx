@@ -9,7 +9,7 @@ export const PremiumPage: React.FC = () => {
   const isDark = theme === 'dark';
 
   return (
-    <div className={`max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-12 space-y-16 animate-fade-in ${
+    <div className={`max-w-6xl mx-auto px-4 sm:px-5 md:px-6 lg:px-8 py-8 sm:py-12 space-y-12 sm:space-y-16 animate-fade-in ${
       isDark ? 'text-white' : 'text-slate-900'
     }`}>
       {/* Hero Section */}
@@ -96,7 +96,7 @@ export const PremiumPage: React.FC = () => {
               </li>
               <li className="flex items-center gap-2.5">
                 <Check className="w-4 h-4 text-purple-500" />
-                <span>Access all TV Series episodes and movies</span>
+                <span>Access all Series episodes and movies</span>
               </li>
               <li className="flex items-center gap-2.5">
                 <Check className="w-4 h-4 text-purple-500" />

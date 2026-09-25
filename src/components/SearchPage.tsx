@@ -100,11 +100,11 @@ export const SearchPage: React.FC = () => {
     searchQuery.trim() !== '';
 
   return (
-    <div className={`max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6 animate-fade-in min-h-[70vh] ${
+    <div className={`max-w-7xl mx-auto px-4 sm:px-5 md:px-6 lg:px-8 py-6 sm:py-8 space-y-6 animate-fade-in min-h-[70vh] ${
       isDark ? 'text-white' : 'text-slate-900'
     }`}>
       {/* Search Input Bar */}
-      <div className="relative max-w-2xl mx-auto">
+      <div className="relative w-full max-w-3xl mx-auto">
         <Search className={`w-5 h-5 absolute left-4 top-1/2 -translate-y-1/2 ${
           isDark ? 'text-zinc-400' : 'text-slate-400'
         }`} />
@@ -139,7 +139,7 @@ export const SearchPage: React.FC = () => {
           {[
             { id: 'all', label: 'All Catalog' },
             { id: 'movie', label: 'Movies Only' },
-            { id: 'series', label: 'TV Series Only' }
+            { id: 'series', label: 'Series Only' }
           ].map(type => (
             <button
               key={type.id}

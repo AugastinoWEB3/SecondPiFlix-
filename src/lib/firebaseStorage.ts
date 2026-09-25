@@ -42,17 +42,35 @@ export async function isStorageReachable(): Promise<boolean> {
   }
 }
 
+export interface UploadResult {
+  url: string;
+  durationMinutes?: number;
+  durationSeconds?: number;
+  assetUrl?: string;
+  originalName?: string;
+}
+
 /**
- * Upload a media file via the server upload API.
+ * Upload a media file via the server upload API with duration & asset metadata.
  */
-async function uploadViaServerApi(
+async function uploadViaServerApiWithMetadata(
   file: File,
   folder: 'videos' | 'covers' | 'episodes',
   onProgress?: (percentage: number) => void
-): Promise<string> {
+): Promise<UploadResult> {
   const token = localStorage.getItem('piflix_admin_token') || 'admin_session';
-  const formData = new FormData();
   const isCover = folder === 'covers';
+
+  // For very large files (>80MB) that are videos, try chunked upload for maximum resilience
+  if (!isCover && file.size > 80 * 1024 * 1024) {
+    try {
+      return await uploadFileInChunks(file, onProgress);
+    } catch (chunkErr) {
+      console.warn('Chunk upload fallback to standard multipart:', chunkErr);
+    }
+  }
+
+  const formData = new FormData();
   const endpoint = isCover ? '/api/admin/upload/cover' : '/api/admin/upload/video';
   const fieldName = isCover ? 'cover' : 'video';
   formData.append(fieldName, file);
@@ -73,7 +91,13 @@ async function uploadViaServerApi(
     const data = await res.json();
     if (data && data.success && data.url) {
       if (onProgress) onProgress(100);
-      return data.url;
+      return {
+        url: data.url,
+        durationMinutes: data.durationMinutes || undefined,
+        durationSeconds: data.durationSeconds || undefined,
+        assetUrl: data.assetUrl || undefined,
+        originalName: data.originalName || file.name
+      };
     }
   } catch (serverErr) {
     console.warn('Server upload fallback notice:', serverErr);
@@ -86,13 +110,13 @@ async function uploadViaServerApi(
       reader.onload = () => {
         if (typeof reader.result === 'string') {
           if (onProgress) onProgress(100);
-          resolve(reader.result);
+          resolve({ url: reader.result });
         } else {
-          resolve('https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=800&auto=format&fit=crop&q=80');
+          resolve({ url: 'https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=800&auto=format&fit=crop&q=80' });
         }
       };
       reader.onerror = () => {
-        resolve('https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=800&auto=format&fit=crop&q=80');
+        resolve({ url: 'https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=800&auto=format&fit=crop&q=80' });
       };
       reader.readAsDataURL(file);
     });
@@ -102,15 +126,70 @@ async function uploadViaServerApi(
 }
 
 /**
- * Upload a media file (video, cover image, or episode asset).
- * Checks Firebase Storage availability first; if provisioned, uploads to Firebase Storage.
- * If not provisioned or on failure, falls back to server storage seamlessly without throwing retry errors.
+ * Robust chunked uploader for large media files (up to 2GB)
  */
-export async function uploadMediaToStorage(
+async function uploadFileInChunks(
+  file: File,
+  onProgress?: (percentage: number) => void
+): Promise<UploadResult> {
+  const token = localStorage.getItem('piflix_admin_token') || 'admin_session';
+  const chunkSize = 10 * 1024 * 1024; // 10MB per chunk
+  const totalChunks = Math.ceil(file.size / chunkSize);
+  const uploadId = `up_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+
+  let finalResult: UploadResult | null = null;
+
+  for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
+    const start = chunkIndex * chunkSize;
+    const end = Math.min(start + chunkSize, file.size);
+    const chunkBlob = file.slice(start, end);
+
+    const res = await fetch('/api/admin/upload/chunk', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/octet-stream',
+        'Authorization': `Bearer ${token}`,
+        'x-upload-id': uploadId,
+        'x-chunk-index': String(chunkIndex),
+        'x-total-chunks': String(totalChunks),
+        'x-original-name': encodeURIComponent(file.name)
+      },
+      body: chunkBlob
+    });
+
+    if (!res.ok) {
+      throw new Error(`Chunk ${chunkIndex + 1}/${totalChunks} upload failed`);
+    }
+
+    const data = await res.json();
+    const progress = Math.round(((chunkIndex + 1) / totalChunks) * 100);
+    if (onProgress) onProgress(progress);
+
+    if (data.completed && data.url) {
+      finalResult = {
+        url: data.url,
+        durationMinutes: data.durationMinutes || undefined,
+        durationSeconds: data.durationSeconds || undefined,
+        originalName: file.name
+      };
+    }
+  }
+
+  if (finalResult) {
+    return finalResult;
+  }
+
+  throw new Error('Chunk assembly did not return complete media file');
+}
+
+/**
+ * Upload media file returning full metadata including duration for videos.
+ */
+export async function uploadMediaWithMetadata(
   file: File,
   folder: 'videos' | 'covers' | 'episodes',
   onProgress?: (percentage: number) => void
-): Promise<string> {
+): Promise<UploadResult> {
   if (!file) {
     throw new Error('No file provided for upload.');
   }
@@ -124,18 +203,13 @@ export async function uploadMediaToStorage(
       const filePath = `${folder}/${uniqueName}`;
       const storageRef = ref(storage, filePath);
 
-      return await new Promise<string>((resolve, reject) => {
+      const downloadUrl = await new Promise<string>((resolve, reject) => {
         const uploadTask = uploadBytesResumable(storageRef, file, {
           contentType: file.type || undefined
         });
 
-        // Set safety timeout of 4 seconds so it fails over quickly if stalled
         const safetyTimer = setTimeout(() => {
-          try {
-            uploadTask.cancel();
-          } catch {
-            // ignore
-          }
+          try { uploadTask.cancel(); } catch {}
           reject(new Error('Firebase Storage timeout, switching to server fallback.'));
         }, 4000);
 
@@ -149,28 +223,41 @@ export async function uploadMediaToStorage(
           },
           (error) => {
             clearTimeout(safetyTimer);
-            console.warn(`Firebase Storage upload note on ${filePath}:`, error?.message || error);
             reject(error);
           },
           async () => {
             clearTimeout(safetyTimer);
             try {
-              const downloadUrl = await getDownloadURL(uploadTask.snapshot.ref);
-              resolve(downloadUrl);
+              const url = await getDownloadURL(uploadTask.snapshot.ref);
+              resolve(url);
             } catch (urlErr) {
               reject(urlErr);
             }
           }
         );
       });
-    } catch (storageErr) {
-      console.warn('Firebase Storage upload failed, utilizing persistent server upload:', storageErr);
-      return uploadViaServerApi(file, folder, onProgress);
+
+      return { url: downloadUrl };
+    } catch {
+      return uploadViaServerApiWithMetadata(file, folder, onProgress);
     }
   }
 
-  // Firebase Storage is not provisioned; use server upload directly
-  return uploadViaServerApi(file, folder, onProgress);
+  return uploadViaServerApiWithMetadata(file, folder, onProgress);
+}
+
+/**
+ * Upload a media file (video, cover image, or episode asset).
+ * Checks Firebase Storage availability first; if provisioned, uploads to Firebase Storage.
+ * If not provisioned or on failure, falls back to server storage seamlessly without throwing retry errors.
+ */
+export async function uploadMediaToStorage(
+  file: File,
+  folder: 'videos' | 'covers' | 'episodes',
+  onProgress?: (percentage: number) => void
+): Promise<string> {
+  const result = await uploadMediaWithMetadata(file, folder, onProgress);
+  return result.url;
 }
 
 /**
@@ -189,4 +276,35 @@ export async function deleteMediaFromStorage(mediaUrl: string): Promise<void> {
       console.warn(`Could not delete Firebase Storage file (${mediaUrl}):`, err?.message || err);
     }
   }
+}
+
+/**
+ * Upload multiple movie / episode video files in parallel or sequence,
+ * ensuring independent failure isolation (one failure never fails the rest).
+ */
+export async function uploadBatchVideosToStorage(
+  files: File[],
+  onOverallProgress?: (completedCount: number, totalCount: number, currentFileName: string) => void
+): Promise<Array<{ file: File; result?: UploadResult; error?: string }>> {
+  const outcomes: Array<{ file: File; result?: UploadResult; error?: string }> = [];
+
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i];
+    if (onOverallProgress) {
+      onOverallProgress(i, files.length, file.name);
+    }
+    try {
+      const res = await uploadMediaWithMetadata(file, 'videos');
+      outcomes.push({ file, result: res });
+    } catch (err: any) {
+      console.error(`Batch upload error for ${file.name}:`, err);
+      outcomes.push({ file, error: err?.message || 'Upload failed' });
+    }
+  }
+
+  if (onOverallProgress) {
+    onOverallProgress(files.length, files.length, 'Complete');
+  }
+
+  return outcomes;
 }

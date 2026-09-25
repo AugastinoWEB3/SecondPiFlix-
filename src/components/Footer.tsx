@@ -13,14 +13,14 @@ export const Footer: React.FC = () => {
     <footer className={`w-full border-t text-xs pb-20 md:pb-10 pt-12 transition-colors duration-200 ${
       isDark ? 'bg-[#08090f] border-zinc-900 text-zinc-400' : 'bg-slate-100/80 border-slate-200 text-slate-600'
     }`}>
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 space-y-10">
+      <div className="max-w-7xl mx-auto px-4 sm:px-5 md:px-6 lg:px-8 space-y-8 sm:space-y-10">
         {/* Top Grid */}
-        <div className="grid grid-cols-1 md:grid-cols-5 gap-8">
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-6 sm:gap-8">
           {/* Brand Col */}
-          <div className="md:col-span-2 space-y-3">
+          <div className="sm:col-span-2 md:col-span-3 lg:col-span-2 space-y-3">
             <PiFlixLogo size="md" showTagline={true} />
             <p className={`text-xs max-w-sm leading-relaxed mt-2 ${isDark ? 'text-zinc-400' : 'text-slate-600'}`}>
-              PiFlix+ is a next-generation entertainment streaming platform built for the global Pi Network ecosystem. Discover critically acclaimed cinema, original TV series, and wildlife documentaries with seamless Pi payments.
+              PiFlix+ is a next-generation entertainment streaming platform built for the global Pi Network ecosystem. Discover critically acclaimed cinema, original series, and wildlife documentaries with seamless Pi payments.
             </p>
             <div className={`flex items-center gap-2 text-[11px] pt-2 ${isDark ? 'text-zinc-400' : 'text-slate-500'}`}>
               <Shield className="w-4 h-4 text-emerald-500" />
@@ -44,7 +44,7 @@ export const Footer: React.FC = () => {
               </li>
               <li>
                 <button onClick={() => setActiveTab('series')} className="hover:text-purple-500 transition">
-                  TV Series
+                  Series
                 </button>
               </li>
               <li>
@@ -54,7 +54,7 @@ export const Footer: React.FC = () => {
               </li>
               <li>
                 <button onClick={() => setActiveTab('watchlist')} className="hover:text-purple-500 transition">
-                  My Watchlist
+                  My List
                 </button>
               </li>
             </ul>

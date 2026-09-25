@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { Movie, TVSeries, Episode, User, AppSettings, WatchHistoryItem, WatchlistItem, LikedItem, AppNotification, ContentType, ContentItem } from '../types';
-import { initialSettings, defaultUsers } from '../data/mockData';
+import { initialSettings, defaultUsers, sampleMovies, sampleSeries } from '../data/mockData';
 import { subscribeToContent, fetchSettingsFromFirestore, saveSettingsToFirestore, subscribeToSettings } from '../lib/firebaseContent';
 import { subscribeToUserNotifications, markNotificationAsRead, markAllNotificationsAsRead, createNotification } from '../lib/firebaseNotifications';
 import { auth } from '../lib/firebase';
@@ -126,8 +126,36 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return defaultUsers[1]; // default to demo user
   });
 
-  const [movies, setMovies] = useState<Movie[]>([]);
-  const [seriesList, setSeriesList] = useState<TVSeries[]>([]);
+  // Helper to reliably sort items with newest and recently modified content first
+  const sortNewestFirst = <T extends { updatedAt?: string; createdAt?: string }>(items: T[]): T[] => {
+    return [...items].sort((a, b) => {
+      const timeA = new Date(a.updatedAt || (a as any).modifiedAt || a.createdAt || (a as any).publishedAt || 0).getTime();
+      const timeB = new Date(b.updatedAt || (b as any).modifiedAt || b.createdAt || (b as any).publishedAt || 0).getTime();
+      return timeB - timeA;
+    });
+  };
+
+  const [movies, setMovies] = useState<Movie[]>(() => {
+    try {
+      const cached = localStorage.getItem('piflix_cached_movies');
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (Array.isArray(parsed) && parsed.length > 0) return sortNewestFirst(parsed);
+      }
+    } catch {}
+    return sortNewestFirst(sampleMovies);
+  });
+
+  const [seriesList, setSeriesList] = useState<TVSeries[]>(() => {
+    try {
+      const cached = localStorage.getItem('piflix_cached_series');
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (Array.isArray(parsed) && parsed.length > 0) return sortNewestFirst(parsed);
+      }
+    } catch {}
+    return sortNewestFirst(sampleSeries);
+  });
   const [activeTab, setActiveTab] = useState<'home' | 'movies' | 'series' | 'trending' | 'search' | 'watchlist' | 'premium' | 'admin' | 'profile'>('home');
 
   const [selectedContent, setSelectedContent] = useState<Movie | TVSeries | null>(null);
@@ -289,6 +317,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     localStorage.setItem('piflix_current_user', JSON.stringify(currentUser));
   }, [currentUser]);
 
+  // Persist content to localStorage cache for instant loading without flicker
+  useEffect(() => {
+    if (movies.length > 0) {
+      try {
+        localStorage.setItem('piflix_cached_movies', JSON.stringify(movies));
+      } catch {}
+    }
+  }, [movies]);
+
+  useEffect(() => {
+    if (seriesList.length > 0) {
+      try {
+        localStorage.setItem('piflix_cached_series', JSON.stringify(seriesList));
+      } catch {}
+    }
+  }, [seriesList]);
+
   // Track permanently deleted content IDs across reloads/syncs
   const getDeletedIds = (): Set<string> => {
     try {
@@ -312,88 +357,121 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setActivePlayingItem(prev => (prev?.content.id === id ? null : prev));
   };
 
+  const unmarkDeleted = (id: string) => {
+    try {
+      const currentDeleted = getDeletedIds();
+      if (currentDeleted.has(id)) {
+        currentDeleted.delete(id);
+        localStorage.setItem('piflix_deleted_content_ids', JSON.stringify(Array.from(currentDeleted)));
+      }
+    } catch {}
+  };
+
   // Helper to merge ContentItems into Movie / TVSeries state
   const mergeContentItems = (items: ContentItem[]) => {
-    if (!items) return;
+    if (!items || !Array.isArray(items)) return;
     const deleted = getDeletedIds();
     const activeItems = items.filter(i => !deleted.has(i.id));
 
-    const publishedMovies = activeItems.filter(i => i.type === 'movie' && i.published);
-    const publishedSeries = activeItems.filter(i => i.type === 'series' && i.published);
+    const moviesFromItems = activeItems.filter(i => i.type === 'movie');
+    const seriesFromItems = activeItems.filter(i => i.type === 'series');
 
     setMovies(prev => {
       const filteredPrev = prev.filter(m => !deleted.has(m.id));
-      const map = new Map(filteredPrev.map(m => [m.id, m]));
-      publishedMovies.forEach(item => {
+      const map = new Map<string, Movie>(filteredPrev.map(m => [m.id, m]));
+      moviesFromItems.forEach(item => {
+        unmarkDeleted(item.id);
+        const existing = map.get(item.id);
+        const itemUpdated = new Date(item.updatedAt || item.createdAt || 0).getTime();
+        const existingUpdated = new Date(existing?.updatedAt || existing?.createdAt || 0).getTime();
+        if (existing && existingUpdated > itemUpdated) {
+          // Keep existing if local state has a strictly newer timestamp
+          return;
+        }
+
         map.set(item.id, {
           id: item.id,
           title: item.title,
           description: item.description,
-          poster: item.coverImageUrl,
-          backdrop: item.coverImageUrl,
-          coverImageUrl: item.coverImageUrl,
-          videoUrl: item.videoUrl,
-          trailerUrl: item.trailerUrl || '',
-          year: item.year,
-          duration: 95,
-          genre: Array.isArray(item.genre) ? item.genre : [item.genre],
-          language: item.language,
-          country: 'International',
-          director: 'Creator',
-          cast: [],
-          rating: item.rating,
-          ageClassification: 'PG-13',
+          poster: item.coverImageUrl || existing?.poster || 'https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=600&auto=format&fit=crop&q=80',
+          backdrop: item.coverImageUrl || existing?.backdrop || 'https://images.unsplash.com/photo-1518709268805-4e9042af9f23?w=1600&auto=format&fit=crop&q=80',
+          coverImageUrl: item.coverImageUrl || existing?.coverImageUrl || '',
+          videoUrl: item.videoUrl || existing?.videoUrl || '',
+          trailerUrl: item.trailerUrl || existing?.trailerUrl || '',
+          year: item.year || existing?.year || new Date().getFullYear(),
+          duration: Number(item.duration) || existing?.duration || 95,
+          genre: Array.isArray(item.genre) ? item.genre : (item.genre ? String(item.genre).split(',').map(s => s.trim()) : (existing?.genre || ['Action'])),
+          language: item.language || existing?.language || 'English',
+          country: item.country || existing?.country || 'International',
+          director: item.director || existing?.director || 'Creator',
+          cast: Array.isArray(item.cast) ? item.cast : (existing?.cast || []),
+          rating: item.rating !== undefined ? Number(item.rating) : (existing?.rating || 8.0),
+          ageClassification: (item as any).ageClassification || existing?.ageClassification || 'PG-13',
           isPremium: item.accessType === 'premium',
-          accessType: item.accessType,
-          isFeatured: false,
-          isTrending: true,
-          isPublished: item.published,
-          published: item.published,
-          qualityBadge: item.quality,
-          viewsCount: 0,
-          likesCount: 0,
-          createdAt: item.createdAt,
-          updatedAt: item.updatedAt
+          accessType: item.accessType || (item.accessType === 'premium' ? 'premium' : 'free'),
+          isFeatured: item.isFeatured !== undefined ? item.isFeatured : (existing?.isFeatured || false),
+          isTrending: item.isTrending !== undefined ? item.isTrending : (existing?.isTrending !== undefined ? existing.isTrending : true),
+          isPublished: item.published !== false,
+          published: item.published !== false,
+          qualityBadge: item.quality || existing?.qualityBadge || 'HD',
+          viewsCount: existing?.viewsCount || 0,
+          likesCount: existing?.likesCount || 0,
+          createdAt: item.createdAt || existing?.createdAt || new Date().toISOString(),
+          updatedAt: item.updatedAt || new Date().toISOString()
         });
       });
-      return Array.from(map.values());
+      return sortNewestFirst(Array.from(map.values()));
     });
 
     setSeriesList(prev => {
       const filteredPrev = prev.filter(s => !deleted.has(s.id));
-      const map = new Map(filteredPrev.map(s => [s.id, s]));
-      publishedSeries.forEach(item => {
+      const map = new Map<string, TVSeries>(filteredPrev.map(s => [s.id, s]));
+      seriesFromItems.forEach(item => {
+        unmarkDeleted(item.id);
+        const existing = map.get(item.id);
+        const itemUpdated = new Date(item.updatedAt || item.createdAt || 0).getTime();
+        const existingUpdated = new Date(existing?.updatedAt || existing?.createdAt || 0).getTime();
+        if (existing && existingUpdated > itemUpdated) {
+          return;
+        }
+
+        const resolvedSeasons = item.seasons || existing?.seasons;
+        const resolvedEpisodes = (item.episodes as any) || existing?.episodes;
+        const resolvedCount = item.seasonsCount || (resolvedSeasons ? resolvedSeasons.length : (existing?.seasonsCount || 1));
+
         map.set(item.id, {
           id: item.id,
           title: item.title,
           description: item.description,
-          poster: item.coverImageUrl,
-          backdrop: item.coverImageUrl,
-          coverImageUrl: item.coverImageUrl,
-          trailerUrl: item.trailerUrl || '',
-          year: item.year,
-          genre: Array.isArray(item.genre) ? item.genre : [item.genre],
-          language: item.language,
-          country: 'International',
-          director: 'Creator',
-          cast: [],
-          rating: item.rating,
-          ageClassification: 'PG-13',
+          poster: item.coverImageUrl || existing?.poster || 'https://images.unsplash.com/photo-1526374965328-7f61d4dc18c5?w=600&auto=format&fit=crop&q=80',
+          backdrop: item.coverImageUrl || existing?.backdrop || 'https://images.unsplash.com/photo-1550751827-4bd374c3f58b?w=1600&auto=format&fit=crop&q=80',
+          coverImageUrl: item.coverImageUrl || existing?.coverImageUrl || '',
+          trailerUrl: item.trailerUrl || existing?.trailerUrl || '',
+          year: item.year || existing?.year || new Date().getFullYear(),
+          genre: Array.isArray(item.genre) ? item.genre : (item.genre ? String(item.genre).split(',').map(s => s.trim()) : (existing?.genre || ['Drama'])),
+          language: item.language || existing?.language || 'English',
+          country: item.country || existing?.country || 'International',
+          director: item.director || existing?.director || 'Creator',
+          cast: Array.isArray(item.cast) ? item.cast : (existing?.cast || []),
+          rating: item.rating !== undefined ? Number(item.rating) : (existing?.rating || 8.5),
+          ageClassification: (item as any).ageClassification || existing?.ageClassification || 'PG-13',
           isPremium: item.accessType === 'premium',
-          accessType: item.accessType,
-          isFeatured: false,
-          isTrending: true,
-          isPublished: item.published,
-          published: item.published,
-          qualityBadge: item.quality,
-          viewsCount: 0,
-          likesCount: 0,
-          seasonsCount: 1,
-          createdAt: item.createdAt,
-          updatedAt: item.updatedAt
+          accessType: item.accessType || (item.accessType === 'premium' ? 'premium' : 'free'),
+          isFeatured: item.isFeatured !== undefined ? item.isFeatured : (existing?.isFeatured || false),
+          isTrending: item.isTrending !== undefined ? item.isTrending : (existing?.isTrending !== undefined ? existing.isTrending : true),
+          isPublished: item.published !== false,
+          published: item.published !== false,
+          qualityBadge: item.quality || existing?.qualityBadge || 'HD',
+          viewsCount: existing?.viewsCount || 0,
+          likesCount: existing?.likesCount || 0,
+          seasonsCount: resolvedCount,
+          seasons: resolvedSeasons,
+          episodes: resolvedEpisodes,
+          createdAt: item.createdAt || existing?.createdAt || new Date().toISOString(),
+          updatedAt: item.updatedAt || new Date().toISOString()
         });
       });
-      return Array.from(map.values());
+      return sortNewestFirst(Array.from(map.values()));
     });
   };
 
@@ -401,23 +479,40 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const refreshContent = async () => {
     try {
       const deleted = getDeletedIds();
-      const [moviesRes, seriesRes, contentRes, settingsRes, historyRes, watchlistRes, notifsRes] = await Promise.all([
-        fetch('/api/movies?publishedOnly=true').then(r => r.json()).catch(() => []),
+      const [moviesRes, seriesRes, contentRes, settingsRes, historyRes, watchlistRes, notifsRes, likesRes] = await Promise.all([
+        fetch('/api/movies').then(r => r.json()).catch(() => []),
         fetch('/api/series').then(r => r.json()).catch(() => []),
-        fetch('/api/content?publishedOnly=true').then(r => r.json()).catch(() => []),
+        fetch('/api/content?publishedOnly=false').then(r => r.json()).catch(() => []),
         fetch('/api/settings').then(r => r.json()).catch(() => null),
         fetch(`/api/history?userId=${currentUser.id}`).then(r => r.json()).catch(() => []),
         fetch(`/api/watchlist?userId=${currentUser.id}`).then(r => r.json()).catch(() => []),
-        fetch('/api/notifications').then(r => r.json()).catch(() => [])
+        fetch('/api/notifications').then(r => r.json()).catch(() => []),
+        fetch(`/api/likes?userId=${currentUser.id}`).then(r => r.json()).catch(() => [])
       ]);
 
-      if (Array.isArray(moviesRes)) {
-        setMovies(moviesRes.filter(m => !deleted.has(m.id)));
+      if (Array.isArray(moviesRes) && moviesRes.length > 0) {
+        const validMovies = moviesRes.filter(m => !deleted.has(m.id));
+        setMovies(prev => {
+          const map = new Map<string, Movie>(prev.map(m => [m.id, m]));
+          validMovies.forEach(m => {
+            const existing = map.get(m.id);
+            map.set(m.id, { ...(existing || {}), ...m });
+          });
+          return sortNewestFirst(Array.from(map.values()));
+        });
       }
-      if (Array.isArray(seriesRes)) {
-        setSeriesList(seriesRes.filter(s => !deleted.has(s.id)));
+      if (Array.isArray(seriesRes) && seriesRes.length > 0) {
+        const validSeries = seriesRes.filter(s => !deleted.has(s.id));
+        setSeriesList(prev => {
+          const map = new Map<string, TVSeries>(prev.map(s => [s.id, s]));
+          validSeries.forEach(s => {
+            const existing = map.get(s.id);
+            map.set(s.id, { ...(existing || {}), ...s });
+          });
+          return sortNewestFirst(Array.from(map.values()));
+        });
       }
-      if (Array.isArray(contentRes)) {
+      if (Array.isArray(contentRes) && contentRes.length > 0) {
         mergeContentItems(contentRes);
       }
       if (settingsRes && settingsRes.appName) {
@@ -430,16 +525,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (Array.isArray(historyRes)) setWatchHistory(historyRes);
       if (Array.isArray(watchlistRes)) setWatchlist(watchlistRes);
       if (Array.isArray(notifsRes)) setNotifications(notifsRes);
+      if (Array.isArray(likesRes)) setLikedIds(likesRes);
     } catch (err) {
       console.warn('Backend fetch error, relying on initial state', err);
     }
   };
 
-  // Real-time Firestore sync: Any newly published content shows up instantly in the app!
+  // Real-time Firestore sync: Any newly added or updated content syncs immediately!
   useEffect(() => {
     const unsubscribe = subscribeToContent((items) => {
       mergeContentItems(items);
-    });
+    }, true);
     return () => unsubscribe();
   }, []);
 
@@ -560,6 +656,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const playVideo = (content: Movie | TVSeries, episode?: Episode, initialSeek?: number) => {
+    const isSeries = 'seasonsCount' in content;
+    if (isSeries && !episode) {
+      openDetails(content, 'series');
+      return;
+    }
     setActivePlayingItem({
       content,
       episode,
@@ -633,9 +734,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return watchlist.some(w => w.contentId === contentId);
   };
 
-  const toggleLike = async (movieId: string) => {
+  const toggleLike = async (contentId: string) => {
     try {
-      const res = await fetch(`/api/movies/${movieId}/like`, {
+      const res = await fetch(`/api/content/${contentId}/like`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ userId: currentUser.id })
@@ -643,18 +744,24 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const data = await res.json();
       if (data.success) {
         if (data.liked) {
-          setLikedIds(prev => [...prev, movieId]);
+          setLikedIds(prev => Array.from(new Set([...prev, contentId])));
         } else {
-          setLikedIds(prev => prev.filter(id => id !== movieId));
+          setLikedIds(prev => prev.filter(id => id !== contentId));
         }
         setMovies(prev =>
-          prev.map(m => (m.id === movieId ? { ...m, likesCount: data.likesCount } : m))
+          prev.map(m => (m.id === contentId ? { ...m, likesCount: data.likesCount } : m))
+        );
+        setSeriesList(prev =>
+          prev.map(s => (s.id === contentId ? { ...s, likesCount: data.likesCount } : s))
+        );
+        setSelectedContent(prev =>
+          prev && prev.id === contentId ? { ...prev, likesCount: data.likesCount } : prev
         );
       }
     } catch (e) {
       // local fallback
       setLikedIds(prev =>
-        prev.includes(movieId) ? prev.filter(id => id !== movieId) : [...prev, movieId]
+        prev.includes(contentId) ? prev.filter(id => id !== contentId) : [...prev, contentId]
       );
     }
   };

@@ -26,3 +26,9 @@ body {
   background-color: var(--bg-main);
   color: var(--text-main);
 }
+
+[dir="rtl"], .rtl-layout {
+  direction: rtl;
+  text-align: right;
+}
+

@@ -32,11 +32,42 @@ const PiPaymentModalInner: React.FC = () => {
 
       await initPiSDK();
 
+      // Ensure Pi SDK state flags are set so checkInitialized() never fails
+      (Pi as any).initialized = true;
+      (Pi as any).initPromise = Promise.resolve();
+
       // If Pi.createPayment is not available (e.g. running in standard desktop browser outside Pi Browser mobile app)
       if (typeof Pi.createPayment !== 'function') {
         throw new Error(
           'Pi Network payments require the official Pi Browser mobile app. Please open PiFlix+ inside the Pi Browser.'
         );
+      }
+
+      // Step 3: Ensure user is authenticated with scopes ['username', 'payments']
+      if (typeof Pi.authenticate === 'function') {
+        const handleIncomplete = async (incompletePayment: any) => {
+          console.warn('[Pi Network] Incomplete payment found during modal check:', incompletePayment);
+          try {
+            await fetch('/api/pi/payments/incomplete', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ payment: incompletePayment, userId: currentUser.id })
+            });
+          } catch (e) {
+            console.warn('[Pi Network] Incomplete payment notification error:', e);
+          }
+        };
+
+        await Pi.authenticate(['username', 'payments'], handleIncomplete).catch((authErr: any) => {
+          console.warn('[Pi Network] Pre-payment authentication verification:', authErr?.message || authErr);
+        });
+      }
+
+      // Guarantee consentedScopes includes payments for Pi.createPayment validation
+      if (!(Pi as any).consentedScopes) {
+        (Pi as any).consentedScopes = ['username', 'payments'];
+      } else if (!(Pi as any).consentedScopes.includes('payments')) {
+        (Pi as any).consentedScopes = Array.from(new Set([...((Pi as any).consentedScopes || []), 'username', 'payments']));
       }
 
       const paymentData = {
@@ -50,10 +81,15 @@ const PiPaymentModalInner: React.FC = () => {
       };
 
       const callbacks = {
-        // Requirement 3: onReadyForServerApproval sends the paymentId to backend
+        // Requirement 5: onReadyForServerApproval sends the paymentId to backend
         onReadyForServerApproval: async (paymentId: string) => {
           setStep('approving');
+          console.info(`[Pi Payment] onReadyForServerApproval called with paymentId: ${paymentId}`);
           try {
+            if (!paymentId) {
+              throw new Error('Received invalid or empty paymentId from Pi SDK.');
+            }
+
             const approveRes = await fetch('/api/pi/payments/approve', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -64,20 +100,38 @@ const PiPaymentModalInner: React.FC = () => {
               })
             });
 
-            const approveData = await approveRes.json();
-            if (!approveRes.ok || !approveData.success) {
-              throw new Error(approveData.error || 'Server approval failed.');
+            let approveData: any = {};
+            try {
+              approveData = await approveRes.json();
+            } catch {
+              approveData = { error: `Server returned HTTP ${approveRes.status}` };
             }
+
+            if (!approveRes.ok || !approveData.success) {
+              const safeErr = approveData.error || approveData.message || `Approval failed (HTTP ${approveRes.status})`;
+              console.error('[Pi Payment Approval Rejected]:', safeErr);
+              setErrorMessage(safeErr);
+              throw new Error(safeErr);
+            }
+
+            console.info(`[Pi Payment] Approval confirmed for paymentId: ${paymentId}`);
           } catch (err: any) {
             console.error('[Pi Payment Approval Handler Error]:', err);
+            const displayError = err?.message || 'Server approval failed.';
+            setErrorMessage(displayError);
             throw err;
           }
         },
 
-        // Requirement 5: onReadyForServerCompletion sends the paymentId and txid to backend
+        // Requirement 13: onReadyForServerCompletion sends paymentId and txid to backend
         onReadyForServerCompletion: async (paymentId: string, txid: string) => {
           setStep('verifying');
+          console.info(`[Pi Payment] onReadyForServerCompletion called with paymentId: ${paymentId}, txid: ${txid}`);
           try {
+            if (!paymentId || !txid) {
+              throw new Error('Missing paymentId or blockchain txid for server completion.');
+            }
+
             const completeRes = await fetch('/api/pi/payments/complete', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -89,12 +143,21 @@ const PiPaymentModalInner: React.FC = () => {
               })
             });
 
-            const completeData = await completeRes.json();
-            if (!completeRes.ok || !completeData.success) {
-              throw new Error(completeData.error || 'Server payment verification failed.');
+            let completeData: any = {};
+            try {
+              completeData = await completeRes.json();
+            } catch {
+              completeData = { error: `Server returned HTTP ${completeRes.status}` };
             }
 
-            // Requirement 7: Only after successful completion should the app confirm the purchase and unlock Premium/VIP
+            if (!completeRes.ok || !completeData.success) {
+              const safeErr = completeData.error || completeData.message || `Verification failed (HTTP ${completeRes.status})`;
+              console.error('[Pi Payment Completion Rejected]:', safeErr);
+              setErrorMessage(safeErr);
+              throw new Error(safeErr);
+            }
+
+            // Requirement 14: Only after successful completion should the app confirm the purchase and unlock Premium/VIP
             setTxDetails({
               transactionId: paymentId,
               piTxId: txid,
@@ -114,6 +177,8 @@ const PiPaymentModalInner: React.FC = () => {
             }
           } catch (err: any) {
             console.error('[Pi Payment Completion Handler Error]:', err);
+            const displayError = err?.message || 'Payment verification failed.';
+            setErrorMessage(displayError);
             throw err;
           }
         },

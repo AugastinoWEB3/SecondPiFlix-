@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useMemo } from 'react';
 import { AppProvider, useApp } from './context/AppContext';
 import { Navbar } from './components/Navbar';
 import { HeroBanner } from './components/HeroBanner';
@@ -15,6 +15,7 @@ import { AdminDashboard } from './components/AdminDashboard';
 import { MovieCard } from './components/MovieCard';
 import { Flame, Film, Tv, Sparkles, Compass, Star, TrendingUp, Play, Bell } from 'lucide-react';
 import { Movie, TVSeries } from './types';
+import { trackVisitorAccess } from './lib/visitorTracking';
 
 const MainAppContent: React.FC = () => {
   const {
@@ -25,15 +26,69 @@ const MainAppContent: React.FC = () => {
     settings,
     watchHistory,
     playVideo,
-    theme
+    openDetails,
+    theme,
+    currentUser,
+    isAdmin
   } = useApp();
 
-  // Filter categories
-  const trendingItems = [...movies.filter(m => m.isTrending), ...seriesList.filter(s => s.isTrending)];
-  const actionSciFi = movies.filter(m => m.genre?.some(g => ['Action', 'Sci-Fi', 'Cyberpunk'].includes(g)));
-  const wildlifeNature = movies.filter(m => m.genre?.some(g => ['Wildlife', 'Nature', 'Documentary'].includes(g)));
-  const topRated = [...movies, ...seriesList].filter(item => item.rating >= 8.5);
-  const premiumExclusives = [...movies, ...seriesList].filter(item => item.isPremium);
+  // Public visitor analytics session recording (ignores admin sessions, deduplicates refreshes)
+  useEffect(() => {
+    trackVisitorAccess({
+      user: currentUser,
+      isAdmin,
+      forceUpdate: false
+    });
+  }, [currentUser?.id, currentUser?.isPiUser, currentUser?.piUsername, isAdmin]);
+
+  // Helper to resolve reliable item timestamp (updatedAt -> modifiedAt -> createdAt -> publishedAt)
+  const getItemTimestamp = (item: any): number => {
+    if (!item) return 0;
+    const dateStr = item.updatedAt || item.modifiedAt || item.createdAt || item.publishedAt;
+    if (!dateStr) return 0;
+    const time = new Date(dateStr).getTime();
+    return isNaN(time) ? 0 : time;
+  };
+
+  // Filter categories with newest and recently modified priority
+  const latestReleases = useMemo(() => {
+    return [...movies, ...seriesList].sort((a, b) => {
+      return getItemTimestamp(b) - getItemTimestamp(a);
+    });
+  }, [movies, seriesList]);
+
+  const sortedMovies = useMemo(() => {
+    return [...movies].sort((a, b) => {
+      return getItemTimestamp(b) - getItemTimestamp(a);
+    });
+  }, [movies]);
+
+  const sortedSeries = useMemo(() => {
+    return [...seriesList].sort((a, b) => {
+      return getItemTimestamp(b) - getItemTimestamp(a);
+    });
+  }, [seriesList]);
+
+  const trendingItems = useMemo(() => {
+    const direct = [...movies.filter(m => m.isTrending), ...seriesList.filter(s => s.isTrending)];
+    return direct.length > 0 ? direct : [...movies, ...seriesList].slice(0, 10);
+  }, [movies, seriesList]);
+
+  const actionSciFi = useMemo(() => {
+    return movies.filter(m => m.genre?.some(g => /action|sci-fi|cyberpunk|martial|kung fu|adventure|thriller/i.test(g)));
+  }, [movies]);
+
+  const wildlifeNature = useMemo(() => {
+    return movies.filter(m => m.genre?.some(g => /wildlife|nature|documentary|drama|crime/i.test(g)));
+  }, [movies]);
+
+  const topRated = useMemo(() => {
+    return [...movies, ...seriesList].filter(item => (item.rating || 0) >= 8.0);
+  }, [movies, seriesList]);
+
+  const premiumExclusives = useMemo(() => {
+    return [...movies, ...seriesList].filter(item => item.isPremium || item.accessType === 'premium');
+  }, [movies, seriesList]);
 
   // Continue watching
   const continueWatchingItems = watchHistory
@@ -64,7 +119,7 @@ const MainAppContent: React.FC = () => {
 
             {/* Continue Watching Carousel if available */}
             {continueWatchingItems.length > 0 && (
-              <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-4">
+              <div className="max-w-7xl mx-auto px-4 sm:px-5 md:px-6 lg:px-8 pt-4">
                 <div className="flex items-center justify-between mb-3">
                   <h2 className={`text-base sm:text-lg font-bold flex items-center gap-2 ${isDark ? 'text-white' : 'text-slate-900'}`}>
                     <Play className="w-4 h-4 text-purple-500 fill-current" />
@@ -123,24 +178,38 @@ const MainAppContent: React.FC = () => {
               </div>
             )}
 
-            {/* Category Rows */}
+            {/* Category Rows & Content Covers Overview */}
             <ContentRow
-              title="Trending Blockbusters"
+              title="Latest Releases"
+              items={latestReleases}
+              icon={<Sparkles className="w-5 h-5 text-purple-500" />}
+              onSeeAll={() => setActiveTab('movies')}
+            />
+
+            <ContentRow
+              title="Trending"
               items={trendingItems}
               icon={<Flame className="w-5 h-5 text-amber-500" />}
               onSeeAll={() => setActiveTab('trending')}
             />
 
             <ContentRow
-              title="PiFlix+ Original TV Series"
-              items={seriesList}
+              title="Movies"
+              items={sortedMovies}
+              icon={<Film className="w-5 h-5 text-purple-500" />}
+              onSeeAll={() => setActiveTab('movies')}
+            />
+
+            <ContentRow
+              title="Series"
+              items={sortedSeries}
               aspectRatio="backdrop"
-              icon={<Tv className="w-5 h-5 text-purple-500" />}
+              icon={<Tv className="w-5 h-5 text-pink-500" />}
               onSeeAll={() => setActiveTab('series')}
             />
 
             <ContentRow
-              title="Action & Cyberpunk Sci-Fi"
+              title="Action & Thrillers"
               items={actionSciFi}
               icon={<Compass className="w-5 h-5 text-sky-500" />}
               onSeeAll={() => setActiveTab('movies')}
@@ -153,16 +222,18 @@ const MainAppContent: React.FC = () => {
               onSeeAll={() => setActiveTab('premium')}
             />
 
-            <ContentRow
-              title="Wild Earth & Nature Documentaries"
-              items={wildlifeNature}
-              aspectRatio="backdrop"
-              icon={<Film className="w-5 h-5 text-emerald-500" />}
-              onSeeAll={() => setActiveTab('movies')}
-            />
+            {wildlifeNature.length > 0 && (
+              <ContentRow
+                title="Documentaries & Nature"
+                items={wildlifeNature}
+                aspectRatio="backdrop"
+                icon={<Film className="w-5 h-5 text-emerald-500" />}
+                onSeeAll={() => setActiveTab('movies')}
+              />
+            )}
 
             <ContentRow
-              title="Highest Rated Masterpieces (★ 8.5+)"
+              title="Highest Rated Masterpieces (★ 8.0+)"
               items={topRated}
               icon={<Star className="w-5 h-5 text-amber-400 fill-amber-400" />}
               onSeeAll={() => setActiveTab('movies')}
@@ -172,40 +243,40 @@ const MainAppContent: React.FC = () => {
 
         {/* VIEW 2: MOVIES BROWSER */}
         {activeTab === 'movies' && (
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8 animate-fade-in">
+          <div className="max-w-7xl mx-auto px-4 sm:px-5 md:px-6 lg:px-8 py-6 sm:py-8 space-y-6 sm:space-y-8 animate-fade-in">
             <div className="space-y-2">
               <h1 className={`text-2xl sm:text-3xl font-black tracking-tight flex items-center gap-3 ${isDark ? 'text-white' : 'text-slate-900'}`}>
                 <Film className="w-7 h-7 text-purple-500" />
-                <span>Feature Movies & Films</span>
+                <span>Movies</span>
               </h1>
               <p className={`text-xs ${isDark ? 'text-zinc-400' : 'text-slate-500'}`}>
                 Stream full-length cinematic blockbusters, sci-fi epics, action thrillers, and nature documentaries.
               </p>
             </div>
 
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3 sm:gap-4">
-              {movies.map(movie => (
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3 sm:gap-4 md:gap-4.5">
+              {sortedMovies.map(movie => (
                 <MovieCard key={movie.id} content={movie} />
               ))}
             </div>
           </div>
         )}
 
-        {/* VIEW 3: TV SERIES BROWSER */}
+        {/* VIEW 3: SERIES BROWSER */}
         {activeTab === 'series' && (
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8 animate-fade-in">
+          <div className="max-w-7xl mx-auto px-4 sm:px-5 md:px-6 lg:px-8 py-6 sm:py-8 space-y-6 sm:space-y-8 animate-fade-in">
             <div className="space-y-2">
               <h1 className={`text-2xl sm:text-3xl font-black tracking-tight flex items-center gap-3 ${isDark ? 'text-white' : 'text-slate-900'}`}>
                 <Tv className="w-7 h-7 text-pink-500" />
-                <span>Original TV Series</span>
+                <span>Series</span>
               </h1>
               <p className={`text-xs ${isDark ? 'text-zinc-400' : 'text-slate-500'}`}>
                 Binge multi-season narrative series with complete episodic streaming and skip-intro support.
               </p>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-              {seriesList.map(series => (
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6">
+              {sortedSeries.map(series => (
                 <div key={series.id} className="space-y-2">
                   <MovieCard content={series} aspectRatio="backdrop" />
                 </div>
@@ -216,7 +287,7 @@ const MainAppContent: React.FC = () => {
 
         {/* VIEW 4: TRENDING TOP 10 */}
         {activeTab === 'trending' && (
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8 animate-fade-in">
+          <div className="max-w-7xl mx-auto px-4 sm:px-5 md:px-6 lg:px-8 py-6 sm:py-8 space-y-6 sm:space-y-8 animate-fade-in">
             <div className="space-y-2">
               <h1 className={`text-2xl sm:text-3xl font-black tracking-tight flex items-center gap-3 ${isDark ? 'text-white' : 'text-slate-900'}`}>
                 <TrendingUp className="w-7 h-7 text-amber-500" />
@@ -239,7 +310,7 @@ const MainAppContent: React.FC = () => {
                         ? 'bg-zinc-900/60 hover:bg-zinc-800/60 border-zinc-800'
                         : 'bg-white hover:bg-slate-50 border-slate-200 shadow-xs'
                     }`}
-                    onClick={() => playVideo(item)}
+                    onClick={() => 'seasonsCount' in item ? openDetails(item, 'series') : playVideo(item)}
                   >
                     {/* Rank Badge with huge typographic number */}
                     <span className={`w-10 text-center font-black text-2xl sm:text-3xl transition font-['Outfit'] ${

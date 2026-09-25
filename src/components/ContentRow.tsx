@@ -38,10 +38,10 @@ export const ContentRow: React.FC<ContentRowProps> = ({
   return (
     <div className="relative group/row my-6 sm:my-8">
       {/* Category Header */}
-      <div className="flex items-center justify-between px-4 sm:px-6 lg:px-8 mb-3">
+      <div className="flex items-center justify-between max-w-7xl mx-auto px-4 sm:px-5 md:px-6 lg:px-8 mb-3">
         <div className="flex items-center gap-2.5">
           {icon && <span className="text-purple-500">{icon}</span>}
-          <h2 className={`text-lg sm:text-xl font-bold tracking-tight ${isDark ? 'text-white' : 'text-slate-900'}`}>
+          <h2 className={`text-base sm:text-lg md:text-xl font-bold tracking-tight ${isDark ? 'text-white' : 'text-slate-900'}`}>
             {title}
           </h2>
           <span className={`text-xs font-medium ml-1 ${isDark ? 'text-zinc-500' : 'text-slate-400'}`}>
@@ -60,7 +60,7 @@ export const ContentRow: React.FC<ContentRowProps> = ({
       </div>
 
       {/* Horizontal Carousel Container */}
-      <div className="relative px-4 sm:px-6 lg:px-8">
+      <div className="relative max-w-7xl mx-auto px-4 sm:px-5 md:px-6 lg:px-8">
         {/* Left Scroll Arrow */}
         <button
           onClick={() => scroll('left')}
@@ -77,7 +77,7 @@ export const ContentRow: React.FC<ContentRowProps> = ({
         {/* Scrollable track */}
         <div
           ref={rowRef}
-          className="flex items-stretch gap-3 sm:gap-4 overflow-x-auto scrollbar-none scroll-smooth pb-2 pt-1"
+          className="flex items-stretch gap-3 sm:gap-3.5 md:gap-4 overflow-x-auto scrollbar-none scroll-smooth pb-2 pt-1"
           style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
         >
           {items.map(item => (
@@ -85,8 +85,8 @@ export const ContentRow: React.FC<ContentRowProps> = ({
               key={item.id}
               className={`shrink-0 ${
                 aspectRatio === 'backdrop'
-                  ? 'w-[260px] sm:w-[320px] md:w-[360px]'
-                  : 'w-[145px] sm:w-[175px] md:w-[195px]'
+                  ? 'w-[250px] sm:w-[290px] md:w-[320px] lg:w-[360px]'
+                  : 'w-[140px] sm:w-[160px] md:w-[175px] lg:w-[195px]'
               }`}
             >
               <MovieCard content={item} aspectRatio={aspectRatio} />

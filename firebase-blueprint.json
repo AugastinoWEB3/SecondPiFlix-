@@ -83,6 +83,24 @@
         "readBy": { "type": "array" }
       },
       "required": ["userId", "title", "message", "type", "createdAt", "read"]
+    },
+    "visitors": {
+      "title": "VisitorRecord",
+      "description": "Anonymous unique visitor tracking and session record for analytics",
+      "type": "object",
+      "properties": {
+        "visitorId": { "type": "string", "maxLength": 128 },
+        "source": { "type": "string", "enum": ["pi_browser", "external_web"] },
+        "piUserId": { "type": "string", "maxLength": 128 },
+        "piUsername": { "type": "string", "maxLength": 128 },
+        "firstSeen": { "type": "string", "maxLength": 100 },
+        "lastSeen": { "type": "string", "maxLength": 100 },
+        "visitDates": { "type": "array" },
+        "visitCount": { "type": "number" },
+        "createdAt": { "type": "string", "maxLength": 100 },
+        "updatedAt": { "type": "string", "maxLength": 100 }
+      },
+      "required": ["visitorId", "source", "firstSeen", "lastSeen", "visitCount"]
     }
   },
   "firestore": {
@@ -101,6 +119,10 @@
     "/notifications/{notificationId}": {
       "schema": "notifications",
       "description": "Public release announcements and user notifications"
+    },
+    "/visitors/{visitorId}": {
+      "schema": "visitors",
+      "description": "Persistent visitor tracking records for unique visitor analytics"
     }
   }
 }

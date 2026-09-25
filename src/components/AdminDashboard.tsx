@@ -4,19 +4,37 @@ import {
   Save, Sparkles, Sliders, ShieldCheck, CheckCircle2, AlertTriangle, Search,
   Radio, Layers, Check, X, RefreshCw, Upload, Play, Lock, Unlock,
   Image as ImageIcon, FileVideo, Filter, ExternalLink, LogOut, KeyRound, ArrowUpDown,
-  Mail
+  Mail, Calendar, Globe, TrendingUp, Award, UploadCloud, FolderUp
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
-import { ContentItem, Movie, TVSeries, User } from '../types';
+import { ContentItem, Movie, TVSeries, User, VisitorAnalyticsData } from '../types';
 import { saveContent, deleteContent, setPublishedState, cleanExistingInvalidMedia } from '../lib/firebaseContent';
 import { createNotification } from '../lib/firebaseNotifications';
-import { uploadMediaToStorage, deleteMediaFromStorage } from '../lib/firebaseStorage';
+import { uploadMediaToStorage, uploadMediaWithMetadata, deleteMediaFromStorage, uploadBatchVideosToStorage } from '../lib/firebaseStorage';
 import { UserAvatar } from './UserAvatar';
 import { AdminSupportInbox } from './AdminSupportInbox';
 import { fetchSupportStatus } from '../lib/supportEmailApi';
 
+function formatDuration(minutes: number | undefined | null): string {
+  if (!minutes || minutes <= 0) return '0m';
+  const hrs = Math.floor(minutes / 60);
+  const mins = Math.round(minutes % 60);
+  if (hrs > 0 && mins > 0) return `${hrs}h ${mins}m`;
+  if (hrs > 0) return `${hrs}h`;
+  return `${mins}m`;
+}
+
+interface SeasonFormItem {
+  id?: string;
+  seasonNumber: number;
+  seasonName: string;
+  title?: string;
+}
+
 interface EpisodeFormItem {
   id?: string;
+  seasonNumber?: number;
+  seasonId?: string;
   episodeNumber: number;
   title: string;
   description?: string;
@@ -65,6 +83,8 @@ export const AdminDashboard: React.FC = () => {
   const [adminSection, setAdminSection] = useState<'content' | 'overview' | 'users' | 'support' | 'settings' | 'admins'>('content');
   const [supportUnreadCount, setSupportUnreadCount] = useState<number>(0);
   const [overviewStats, setOverviewStats] = useState<any>(null);
+  const [visitorAnalytics, setVisitorAnalytics] = useState<VisitorAnalyticsData | null>(null);
+  const [refreshingVisitors, setRefreshingVisitors] = useState(false);
   const [usersList, setUsersList] = useState<User[]>([]);
   const [adminsList, setAdminsList] = useState<any[]>([]);
   const [newAdminEmail, setNewAdminEmail] = useState('');
@@ -82,6 +102,7 @@ export const AdminDashboard: React.FC = () => {
   // Unified Content Item Modal (Create & Edit - Requirements 1 to 17)
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
+  const [editingOriginalItem, setEditingOriginalItem] = useState<Movie | TVSeries | null>(null);
   const [savingContent, setSavingContent] = useState(false);
   const [saveSuccessMessage, setSaveSuccessMessage] = useState<string | null>(null);
   const [saveErrorMessage, setSaveErrorMessage] = useState<string | null>(null);
@@ -101,7 +122,12 @@ export const AdminDashboard: React.FC = () => {
   const [isPublished, setIsPublished] = useState(true);
   const [coverImageUrl, setCoverImageUrl] = useState('');
   const [videoUrl, setVideoUrl] = useState('');
+  const [movieDuration, setMovieDuration] = useState<number>(95);
+  const [detectedDurationNotice, setDetectedDurationNotice] = useState<string | null>(null);
+  const [isDetectingDuration, setIsDetectingDuration] = useState<boolean>(false);
   const [episodes, setEpisodes] = useState<EpisodeFormItem[]>([]);
+  const [seasons, setSeasons] = useState<SeasonFormItem[]>([]);
+  const [activeSeasonNumber, setActiveSeasonNumber] = useState<number>(1);
 
   // File upload state & progress
   const [isUploadingVideo, setIsUploadingVideo] = useState(false);
@@ -109,6 +135,18 @@ export const AdminDashboard: React.FC = () => {
   const [isUploadingCover, setIsUploadingCover] = useState(false);
   const [coverUploadProgress, setCoverUploadProgress] = useState(0);
   const [uploadFeedback, setUploadFeedback] = useState<string | null>(null);
+  const [isDragOverVideo, setIsDragOverVideo] = useState(false);
+
+  // Batch Movie Upload State
+  const [isBatchMovieModalOpen, setIsBatchMovieModalOpen] = useState(false);
+  const [batchMovieFiles, setBatchMovieFiles] = useState<File[]>([]);
+  const [batchMovieUploading, setBatchMovieUploading] = useState(false);
+  const [batchMovieProgress, setBatchMovieProgress] = useState({ completed: 0, total: 0, currentName: '' });
+  const [batchMovieResults, setBatchMovieResults] = useState<Array<{ title: string; success: boolean; durationMinutes?: number; error?: string }>>([]);
+
+  // Batch Episodes Upload State
+  const [isBatchEpisodesUploading, setIsBatchEpisodesUploading] = useState(false);
+  const [batchEpisodeProgress, setBatchEpisodeProgress] = useState({ completed: 0, total: 0, currentName: '' });
 
   // Episode video upload state tracker: episode index -> boolean
   const [uploadingEpisodeIdx, setUploadingEpisodeIdx] = useState<number | null>(null);
@@ -120,12 +158,32 @@ export const AdminDashboard: React.FC = () => {
   // File inputs ref
   const videoFileInputRef = useRef<HTMLInputElement | null>(null);
   const coverFileInputRef = useRef<HTMLInputElement | null>(null);
+  const batchMovieInputRef = useRef<HTMLInputElement | null>(null);
+  const batchEpisodesInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Fetch visitor analytics specifically
+  const fetchVisitorAnalytics = async () => {
+    try {
+      setRefreshingVisitors(true);
+      const res = await fetch('/api/admin/analytics/visitors', {
+        headers: adminToken ? { Authorization: `Bearer ${adminToken}` } : {}
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setVisitorAnalytics(data);
+      }
+    } catch (err) {
+      console.warn('Failed to load visitor analytics:', err);
+    } finally {
+      setRefreshingVisitors(false);
+    }
+  };
 
   // Fetch admin overview stats and admin team list
   const loadAdminData = async () => {
     setLoading(true);
     try {
-      const [ovRes, usrRes, admRes, supportStatus] = await Promise.all([
+      const [ovRes, usrRes, admRes, supportStatus, visRes] = await Promise.all([
         fetch('/api/admin/overview', {
           headers: adminToken ? { Authorization: `Bearer ${adminToken}` } : {}
         }).then(r => r.json()).catch(() => null),
@@ -135,9 +193,20 @@ export const AdminDashboard: React.FC = () => {
         fetch('/api/admin/admins', {
           headers: adminToken ? { Authorization: `Bearer ${adminToken}` } : {}
         }).then(r => r.json()).catch(() => []),
-        fetchSupportStatus(adminToken).catch(() => null)
+        fetchSupportStatus(adminToken).catch(() => null),
+        fetch('/api/admin/analytics/visitors', {
+          headers: adminToken ? { Authorization: `Bearer ${adminToken}` } : {}
+        }).then(r => r.json()).catch(() => null)
       ]);
-      if (ovRes) setOverviewStats(ovRes);
+      if (ovRes) {
+        setOverviewStats(ovRes);
+        if (ovRes.visitorAnalytics) {
+          setVisitorAnalytics(ovRes.visitorAnalytics);
+        }
+      }
+      if (visRes) {
+        setVisitorAnalytics(visRes);
+      }
       if (Array.isArray(usrRes)) setUsersList(usrRes);
       if (Array.isArray(admRes)) setAdminsList(admRes);
       if (supportStatus && typeof supportStatus.unreadMessages === 'number') {
@@ -156,6 +225,17 @@ export const AdminDashboard: React.FC = () => {
       cleanExistingInvalidMedia().catch(e => console.warn('Media reference audit notice:', e));
     }
   }, [isAdmin, adminToken]);
+
+  // Periodic real-time update when Admin is on overview tab
+  useEffect(() => {
+    if (isAdmin && adminSection === 'overview') {
+      fetchVisitorAnalytics();
+      const interval = setInterval(() => {
+        fetchVisitorAnalytics();
+      }, 25000);
+      return () => clearInterval(interval);
+    }
+  }, [isAdmin, adminSection, adminToken]);
 
   useEffect(() => {
     setFormSettings({ ...settings });
@@ -277,6 +357,7 @@ export const AdminDashboard: React.FC = () => {
   // Open Create Content Modal
   const openCreateModal = (type: 'movie' | 'series' = 'movie') => {
     setIsEditing(false);
+    setEditingOriginalItem(null);
     setContentId((type === 'series' ? 's-' : 'm-') + Date.now());
     setTitle('');
     setDescription('');
@@ -293,7 +374,8 @@ export const AdminDashboard: React.FC = () => {
     setVideoUrl('');
     setEpisodes(type === 'series' ? [
       {
-        id: `ep-temp-1`,
+        id: `ep-temp-s1-1`,
+        seasonNumber: 1,
         episodeNumber: 1,
         title: 'Episode 1: Pilot',
         description: 'The journey begins.',
@@ -303,6 +385,17 @@ export const AdminDashboard: React.FC = () => {
         skipIntroSec: 15
       }
     ] : []);
+    setSeasons(type === 'series' ? [
+      {
+        id: `sn-temp-1`,
+        seasonNumber: 1,
+        seasonName: 'Season 1',
+        title: 'Season 1'
+      }
+    ] : []);
+    setActiveSeasonNumber(1);
+    setMovieDuration(type === 'series' ? 45 : 95);
+    setDetectedDurationNotice(null);
     setSaveErrorMessage(null);
     setSaveSuccessMessage(null);
     setUploadFeedback(null);
@@ -312,6 +405,7 @@ export const AdminDashboard: React.FC = () => {
   // Open Edit Content Modal (Requirement 14 & 16)
   const openEditModal = (item: Movie | TVSeries) => {
     setIsEditing(true);
+    setEditingOriginalItem(item);
     const isSeries = 'seasonsCount' in item;
     setContentId(item.id);
     setTitle(item.title);
@@ -327,10 +421,15 @@ export const AdminDashboard: React.FC = () => {
     setIsPublished(item.isPublished !== undefined ? item.isPublished : true);
     setCoverImageUrl(item.coverImageUrl || item.poster || item.backdrop || '');
     setVideoUrl((item as Movie).videoUrl || '');
+    setMovieDuration((item as any).duration || (isSeries ? 45 : 95));
+    setDetectedDurationNotice(null);
 
     if (isSeries) {
+      // 1. Load existing episodes
       const seriesEpisodes: EpisodeFormItem[] = ((item as any).episodes || []).map((ep: any, idx: number) => ({
         id: ep.id || `ep-${item.id}-${idx + 1}`,
+        seasonNumber: ep.seasonNumber || 1,
+        seasonId: ep.seasonId || undefined,
         episodeNumber: ep.episodeNumber || idx + 1,
         title: ep.title || `Episode ${idx + 1}`,
         description: ep.description || '',
@@ -339,9 +438,51 @@ export const AdminDashboard: React.FC = () => {
         duration: ep.duration || 45,
         skipIntroSec: ep.skipIntroSec || 0
       }));
+
+      // 2. Load existing seasons
+      let loadedSeasons: SeasonFormItem[] = [];
+      if (Array.isArray((item as any).seasons) && (item as any).seasons.length > 0) {
+        loadedSeasons = (item as any).seasons.map((sn: any, idx: number) => ({
+          id: sn.id || `sn-${item.id}-${sn.seasonNumber || idx + 1}`,
+          seasonNumber: sn.seasonNumber || idx + 1,
+          seasonName: sn.seasonName || sn.title || `Season ${sn.seasonNumber || idx + 1}`,
+          title: sn.title || sn.seasonName || `Season ${sn.seasonNumber || idx + 1}`
+        }));
+      }
+
+      if (loadedSeasons.length === 0) {
+        if (seriesEpisodes.length > 0) {
+          const distinctNums = Array.from(new Set(seriesEpisodes.map(e => e.seasonNumber || 1))).sort((a, b) => a - b);
+          loadedSeasons = distinctNums.map(num => ({
+            id: `sn-${item.id}-${num}`,
+            seasonNumber: num,
+            seasonName: `Season ${num}`,
+            title: `Season ${num}`
+          }));
+        } else if ((item as any).seasonsCount) {
+          const count = (item as any).seasonsCount || 1;
+          loadedSeasons = Array.from({ length: count }, (_, i) => ({
+            id: `sn-${item.id}-${i + 1}`,
+            seasonNumber: i + 1,
+            seasonName: `Season ${i + 1}`,
+            title: `Season ${i + 1}`
+          }));
+        } else {
+          loadedSeasons = [{
+            id: `sn-${item.id}-1`,
+            seasonNumber: 1,
+            seasonName: 'Season 1',
+            title: 'Season 1'
+          }];
+        }
+      }
+
+      setSeasons(loadedSeasons);
+      setActiveSeasonNumber(loadedSeasons[0]?.seasonNumber || 1);
       setEpisodes(seriesEpisodes.length > 0 ? seriesEpisodes : [
         {
-          id: `ep-${item.id}-1`,
+          id: `ep-${item.id}-s1-1`,
+          seasonNumber: 1,
           episodeNumber: 1,
           title: 'Episode 1',
           description: '',
@@ -351,7 +492,39 @@ export const AdminDashboard: React.FC = () => {
           skipIntroSec: 0
         }
       ]);
+
+      // Also async fetch from server to guarantee freshest seasons & episodes from DB
+      fetch(`/api/series/${item.id}`)
+        .then(r => r.json())
+        .then(data => {
+          const sList = data?.seasons || (Array.isArray(data) ? data : []);
+          const eList = data?.episodes || [];
+          if (Array.isArray(sList) && sList.length > 0) {
+            setSeasons(sList.map((sn: any, idx: number) => ({
+              id: sn.id || `sn-${item.id}-${sn.seasonNumber || idx + 1}`,
+              seasonNumber: sn.seasonNumber || idx + 1,
+              seasonName: sn.seasonName || sn.title || `Season ${sn.seasonNumber || idx + 1}`,
+              title: sn.title || sn.seasonName || `Season ${sn.seasonNumber || idx + 1}`
+            })));
+          }
+          if (Array.isArray(eList) && eList.length > 0) {
+            setEpisodes(eList.map((ep: any, idx: number) => ({
+              id: ep.id || `ep-${item.id}-${idx + 1}`,
+              seasonNumber: ep.seasonNumber || 1,
+              seasonId: ep.seasonId || undefined,
+              episodeNumber: ep.episodeNumber || idx + 1,
+              title: ep.title || `Episode ${idx + 1}`,
+              description: ep.description || '',
+              thumbnail: ep.thumbnail || item.coverImageUrl || item.poster || '',
+              videoUrl: ep.videoUrl || '',
+              duration: ep.duration || 45,
+              skipIntroSec: ep.skipIntroSec || 0
+            })));
+          }
+        })
+        .catch(() => {});
     } else {
+      setSeasons([]);
       setEpisodes([]);
     }
 
@@ -359,6 +532,44 @@ export const AdminDashboard: React.FC = () => {
     setSaveSuccessMessage(null);
     setUploadFeedback(null);
     setIsModalOpen(true);
+  };
+
+  // Helper to detect duration from video URL or file
+  const handleDetectDuration = async (urlOrPath: string, epIndex?: number) => {
+    if (!urlOrPath.trim()) return;
+    setIsDetectingDuration(true);
+    setDetectedDurationNotice(null);
+    try {
+      const token = localStorage.getItem('piflix_admin_token') || adminToken;
+      const res = await fetch('/api/admin/detect-duration', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify({ videoUrl: urlOrPath.trim() })
+      });
+      const data = await res.json();
+      if (data && data.success && data.durationMinutes) {
+        if (epIndex !== undefined) {
+          setEpisodes(prev => {
+            const next = [...prev];
+            next[epIndex] = { ...next[epIndex], duration: data.durationMinutes };
+            return next;
+          });
+          setUploadFeedback(`Detected Episode ${epIndex + 1} duration: ${formatDuration(data.durationMinutes)} (${data.durationMinutes}m)`);
+        } else {
+          setMovieDuration(data.durationMinutes);
+          setDetectedDurationNotice(`Real video duration detected: ${formatDuration(data.durationMinutes)} (${data.durationMinutes} minutes)`);
+        }
+      } else {
+        setDetectedDurationNotice('Could not auto-detect duration from video source. You can enter minutes manually.');
+      }
+    } catch {
+      setDetectedDurationNotice('Duration detection request failed. You can enter minutes manually.');
+    } finally {
+      setIsDetectingDuration(false);
+    }
   };
 
   // Handle Video File Upload (Requirement 1 & 16 & Bug 2)
@@ -374,7 +585,7 @@ export const AdminDashboard: React.FC = () => {
     setUploadFeedback(`Uploading ${file.name} (${(file.size / (1024 * 1024)).toFixed(1)} MB)...`);
 
     try {
-      const permanentUrl = await uploadMediaToStorage(file, 'videos', (pct) => {
+      const result = await uploadMediaWithMetadata(file, 'videos', (pct) => {
         setVideoUploadProgress(pct);
       });
 
@@ -382,12 +593,21 @@ export const AdminDashboard: React.FC = () => {
       if (episodeIdx !== undefined) {
         setEpisodes(prev => {
           const next = [...prev];
-          next[episodeIdx] = { ...next[episodeIdx], videoUrl: permanentUrl };
+          next[episodeIdx] = {
+            ...next[episodeIdx],
+            videoUrl: result.url,
+            ...(result.durationMinutes ? { duration: result.durationMinutes } : {})
+          };
           return next;
         });
-        setUploadFeedback(`Episode ${episodeIdx + 1} video uploaded successfully!`);
+        const durationText = result.durationMinutes ? ` (Real duration: ${formatDuration(result.durationMinutes)})` : '';
+        setUploadFeedback(`Episode ${episodeIdx + 1} video uploaded successfully!${durationText}`);
       } else {
-        setVideoUrl(permanentUrl);
+        setVideoUrl(result.url);
+        if (result.durationMinutes) {
+          setMovieDuration(result.durationMinutes);
+          setDetectedDurationNotice(`Real video duration detected: ${formatDuration(result.durationMinutes)} (${result.durationMinutes} minutes)`);
+        }
         setUploadFeedback(`Main video uploaded successfully (${(file.size / (1024 * 1024)).toFixed(1)} MB). Ready for streaming.`);
       }
     } catch (err: any) {
@@ -407,12 +627,13 @@ export const AdminDashboard: React.FC = () => {
     setUploadFeedback(`Uploading cover image ${file.name}...`);
 
     try {
-      const permanentUrl = await uploadMediaToStorage(file, 'covers', (pct) => {
+      const result = await uploadMediaWithMetadata(file, 'covers', (pct) => {
         setCoverUploadProgress(pct);
       });
 
       setCoverUploadProgress(100);
-      setCoverImageUrl(permanentUrl);
+      const chosenUrl = result.assetUrl || result.url;
+      setCoverImageUrl(chosenUrl);
       setUploadFeedback('Cover image uploaded and linked successfully!');
     } catch (err: any) {
       setUploadFeedback(`Cover upload notice: ${err?.message || 'Server connection error'}`);
@@ -421,15 +642,54 @@ export const AdminDashboard: React.FC = () => {
     }
   };
 
-  // Add a new Episode to TV series (Requirement 13)
-  const handleAddEpisode = () => {
-    const nextNumber = episodes.length + 1;
+  // Add a new Episode to TV series for active season
+  const handleAddEpisode = (targetSeasonNumber?: number) => {
+    const sNum = targetSeasonNumber !== undefined ? targetSeasonNumber : activeSeasonNumber;
+    const currentSeasonObj = seasons.find(s => s.seasonNumber === sNum);
+    const seasonEps = episodes.filter(e => (e.seasonNumber || 1) === sNum);
+    const existingEpNums = seasonEps.map(e => Number(e.episodeNumber) || 0);
+    const nextNumber = existingEpNums.length > 0 ? Math.max(...existingEpNums) + 1 : 1;
+
     setEpisodes(prev => [
       ...prev,
       {
-        id: `ep-${contentId}-${nextNumber}`,
+        id: `ep-${contentId || 'series'}-s${sNum}-${Date.now()}-${nextNumber}`,
+        seasonNumber: sNum,
+        seasonId: currentSeasonObj?.id,
         episodeNumber: nextNumber,
         title: `Episode ${nextNumber}`,
+        description: '',
+        thumbnail: coverImageUrl,
+        videoUrl: '',
+        duration: 45,
+        skipIntroSec: 15,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      }
+    ]);
+  };
+
+  // Add a new Season
+  const handleAddSeason = () => {
+    const existingSeasonNums = seasons.map(s => Number(s.seasonNumber) || 0);
+    const nextSeasonNum = existingSeasonNums.length > 0 ? Math.max(...existingSeasonNums) + 1 : 1;
+    const newSeason: SeasonFormItem = {
+      id: `sn-${contentId || 'series'}-${Date.now()}-${nextSeasonNum}`,
+      seasonNumber: nextSeasonNum,
+      seasonName: `Season ${nextSeasonNum}`,
+      title: `Season ${nextSeasonNum}`
+    };
+    setSeasons(prev => [...prev, newSeason]);
+    setActiveSeasonNumber(nextSeasonNum);
+    // Automatically prepare episode 1 for the new season
+    setEpisodes(prev => [
+      ...prev,
+      {
+        id: `ep-${contentId || 'series'}-s${nextSeasonNum}-${Date.now()}-1`,
+        seasonNumber: nextSeasonNum,
+        seasonId: newSeason.id,
+        episodeNumber: 1,
+        title: 'Episode 1',
         description: '',
         thumbnail: coverImageUrl,
         videoUrl: '',
@@ -439,22 +699,180 @@ export const AdminDashboard: React.FC = () => {
     ]);
   };
 
-  // Remove an Episode
-  const handleRemoveEpisode = (idx: number) => {
-    setEpisodes(prev => prev.filter((_, i) => i !== idx).map((ep, i) => ({ ...ep, episodeNumber: i + 1 })));
+  // Remove a Season and its episodes
+  const handleRemoveSeason = (sNum: number) => {
+    if (seasons.length <= 1) return;
+    setSeasons(prev => prev.filter(s => s.seasonNumber !== sNum));
+    setEpisodes(prev => prev.filter(e => (e.seasonNumber || 1) !== sNum));
+    const remaining = seasons.filter(s => s.seasonNumber !== sNum);
+    if (remaining.length > 0) {
+      setActiveSeasonNumber(remaining[0].seasonNumber);
+    }
+  };
+
+  // Remove an Episode safely by id or index
+  const handleRemoveEpisode = (idOrIndex: string | number) => {
+    if (typeof idOrIndex === 'string') {
+      setEpisodes(prev => prev.filter(ep => ep.id !== idOrIndex));
+    } else {
+      setEpisodes(prev => prev.filter((_, i) => i !== idOrIndex));
+    }
+  };
+
+  // Clean title from video filename (removes .mp4, 1080p, release tags)
+  const cleanTitleFromFileName = (fileName: string): string => {
+    let clean = fileName.replace(/\.[^/.]+$/, '');
+    clean = clean.replace(/[\._\-\+]/g, ' ');
+    clean = clean.replace(/\b(1080p|720p|480p|4k|2160p|bluray|bdrip|webrip|web-dl|x264|x265|hevc|aac|dvdrip|h264|hdrip|yify|proper|repack)\b/gi, '');
+    clean = clean.trim().replace(/\s+/g, ' ');
+    return clean.replace(/\w\S*/g, (txt) => txt.charAt(0).toUpperCase() + txt.substr(1).toLowerCase()) || fileName;
+  };
+
+  // Handle batch upload of multiple movie video files
+  const handleBatchMovieUpload = async (files: File[]) => {
+    if (!files || files.length === 0) return;
+    setBatchMovieUploading(true);
+    setBatchMovieResults([]);
+    setBatchMovieProgress({ completed: 0, total: files.length, currentName: files[0].name });
+
+    const results: Array<{ title: string; success: boolean; durationMinutes?: number; error?: string }> = [];
+
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      const parsedTitle = cleanTitleFromFileName(file.name);
+      setBatchMovieProgress({ completed: i, total: files.length, currentName: file.name });
+
+      try {
+        const uploadRes = await uploadMediaWithMetadata(file, 'videos');
+        const duration = uploadRes.durationMinutes || 95;
+        const newMovieId = 'm-' + Date.now() + '-' + i;
+        
+        const newMovie: ContentItem = {
+          id: newMovieId,
+          title: parsedTitle,
+          description: `${parsedTitle} - Streaming movie in HD.`,
+          type: 'movie',
+          coverImageUrl: 'https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=800&auto=format&fit=crop&q=80',
+          videoUrl: uploadRes.url,
+          year: new Date().getFullYear(),
+          duration: duration,
+          genre: 'Action, Drama',
+          language: 'English',
+          rating: 8.5,
+          quality: 'HD',
+          accessType: 'free',
+          published: true,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        };
+
+        await saveContent(newMovie);
+        results.push({ title: parsedTitle, success: true, durationMinutes: duration });
+      } catch (err: any) {
+        console.error(`Batch movie upload failure for ${file.name}:`, err);
+        results.push({ title: parsedTitle, success: false, error: err?.message || 'Upload error' });
+      }
+
+      setBatchMovieResults([...results]);
+    }
+
+    setBatchMovieProgress({ completed: files.length, total: files.length, currentName: 'All files processed' });
+    setBatchMovieUploading(false);
+    await refreshContent();
+  };
+
+  // Handle batch upload of multiple episode video files for active season of current TV series
+  const handleBatchEpisodeUpload = async (files: File[]) => {
+    if (!files || files.length === 0) return;
+    setIsBatchEpisodesUploading(true);
+    setBatchEpisodeProgress({ completed: 0, total: files.length, currentName: files[0].name });
+
+    // Sort files by natural alphanumeric order
+    const sortedFiles = Array.from(files).sort((a, b) => 
+      a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' })
+    );
+
+    const sNum = activeSeasonNumber;
+    const currentSeasonObj = seasons.find(s => s.seasonNumber === sNum);
+    const existingSeasonEps = episodes.filter(e => (e.seasonNumber || 1) === sNum);
+    const existingNums = existingSeasonEps.map(e => Number(e.episodeNumber) || 0);
+    const startEpNum = existingNums.length > 0 ? Math.max(...existingNums) + 1 : 1;
+
+    for (let i = 0; i < sortedFiles.length; i++) {
+      const file = sortedFiles[i];
+      setBatchEpisodeProgress({ completed: i, total: sortedFiles.length, currentName: file.name });
+
+      try {
+        const uploadRes = await uploadMediaWithMetadata(file, 'videos');
+        const duration = uploadRes.durationMinutes || 45;
+        const cleanName = cleanTitleFromFileName(file.name);
+        const thisEpNum = startEpNum + i;
+
+        setEpisodes(prev => [
+          ...prev,
+          {
+            id: `ep-${contentId || 'series'}-s${sNum}-${Date.now()}-${thisEpNum}`,
+            seasonNumber: sNum,
+            seasonId: currentSeasonObj?.id,
+            episodeNumber: thisEpNum,
+            title: cleanName || `Episode ${thisEpNum}`,
+            description: '',
+            thumbnail: coverImageUrl,
+            videoUrl: uploadRes.url,
+            duration,
+            skipIntroSec: 15
+          }
+        ]);
+      } catch (err: any) {
+        console.error(`Batch episode upload failed for ${file.name}:`, err);
+      }
+    }
+
+    setBatchEpisodeProgress({ completed: sortedFiles.length, total: sortedFiles.length, currentName: 'Complete' });
+    setIsBatchEpisodesUploading(false);
+    setUploadFeedback(`Batch episodes uploaded successfully (${sortedFiles.length} files attached to Season ${sNum})!`);
   };
 
   // Save / Submit Content Form (Firestore + Server API Sync)
   const handleSaveContent = async (e: React.FormEvent) => {
     e.preventDefault();
+    setSaveErrorMessage(null);
+    setSaveSuccessMessage(null);
+
+    // Problem 4: Transactional Integrity Validation before persistence
     if (!title.trim()) {
-      setSaveErrorMessage('Please enter a title for the content item');
+      setSaveErrorMessage('Please enter a title for the content item.');
       return;
     }
 
+    if (!coverImageUrl.trim()) {
+      setSaveErrorMessage('Please upload or provide a cover image for this title.');
+      return;
+    }
+
+    if (contentType === 'movie') {
+      if (!videoUrl.trim()) {
+        setSaveErrorMessage('Please upload a video file or provide a streaming URL for the movie.');
+        return;
+      }
+      if (!movieDuration || movieDuration <= 0) {
+        setSaveErrorMessage('Please specify a valid movie duration in minutes.');
+        return;
+      }
+    } else {
+      // TV Series validation
+      if (!episodes || episodes.length === 0) {
+        setSaveErrorMessage('Please add at least one episode to this TV series.');
+        return;
+      }
+      const invalidEp = episodes.find((ep) => !ep.title || !ep.title.trim());
+      if (invalidEp) {
+        setSaveErrorMessage(`Episode ${invalidEp.episodeNumber} in Season ${invalidEp.seasonNumber || 1} requires a title.`);
+        return;
+      }
+    }
+
     setSavingContent(true);
-    setSaveErrorMessage(null);
-    setSaveSuccessMessage(null);
 
     const now = new Date().toISOString();
     const itemToSave: ContentItem = {
@@ -466,36 +884,82 @@ export const AdminDashboard: React.FC = () => {
       videoUrl: videoUrl.trim(),
       trailerUrl: trailerUrl.trim(),
       year: Number(releaseYear) || new Date().getFullYear(),
+      duration: contentType === 'movie' ? (Number(movieDuration) || 95) : undefined,
       genre: genreInput.trim(),
       language: language.trim() || 'English',
+      country: editingOriginalItem?.country || 'International',
+      director: editingOriginalItem?.director || 'Creator',
+      cast: editingOriginalItem?.cast || [],
       rating: Number(rating) || 8.0,
       quality: quality || 'HD',
       accessType,
       published: isPublished,
-      createdAt: now,
+      isFeatured: editingOriginalItem?.isFeatured || false,
+      isTrending: editingOriginalItem?.isTrending !== undefined ? editingOriginalItem.isTrending : true,
+      createdAt: isEditing && editingOriginalItem?.createdAt ? editingOriginalItem.createdAt : now,
       updatedAt: now,
-      episodes: contentType === 'series' ? episodes : undefined
+      seasonsCount: contentType === 'series' ? (seasons.length || 1) : undefined,
+      seasons: contentType === 'series' ? seasons.map((s, idx) => ({
+        id: s.id || `sn-${contentId || 'series'}-${s.seasonNumber || idx + 1}`,
+        seasonNumber: Number(s.seasonNumber) || (idx + 1),
+        seasonName: (s.seasonName || `Season ${s.seasonNumber || idx + 1}`).trim(),
+        title: (s.title || s.seasonName || `Season ${s.seasonNumber || idx + 1}`).trim(),
+        episodesCount: episodes.filter(e => (e.seasonNumber || 1) === (s.seasonNumber || idx + 1)).length
+      })) : undefined,
+      episodes: contentType === 'series' ? episodes.map((ep, idx) => ({
+        id: ep.id || `ep-${contentId || 'series'}-s${ep.seasonNumber || 1}-${idx + 1}`,
+        seasonNumber: Number(ep.seasonNumber) || 1,
+        seasonId: ep.seasonId || undefined,
+        episodeNumber: Number(ep.episodeNumber) || (idx + 1),
+        title: (ep.title || `Episode ${idx + 1}`).trim(),
+        description: (ep.description || '').trim(),
+        thumbnail: ep.thumbnail || coverImageUrl,
+        videoUrl: (ep.videoUrl || '').trim(),
+        duration: Number(ep.duration) || 45,
+        skipIntroSec: Number(ep.skipIntroSec) || 0
+      })) : undefined
     };
 
     try {
-      // 1. Save to Firestore (primary persistent storage)
-      const firestoreResult = await saveContent(itemToSave);
-
-      // 2. Also save to server API to keep in-memory cache synchronized
+      // 1. Save to server API first to ensure backend JSON store persistence
       const apiEndpoint = isEditing ? `/api/content/${itemToSave.id}` : '/api/content';
       const method = isEditing ? 'PUT' : 'POST';
-      await fetch(apiEndpoint, {
-        method,
-        headers: {
-          'Content-Type': 'application/json',
-          ...(adminToken ? { Authorization: `Bearer ${adminToken}` } : {})
-        },
-        body: JSON.stringify(itemToSave)
-      }).catch(err => console.warn('Server API sync fallback error:', err));
+      let serverSaved = false;
+      try {
+        const apiRes = await fetch(apiEndpoint, {
+          method,
+          headers: {
+            'Content-Type': 'application/json',
+            'x-admin-request': 'true',
+            ...(adminToken ? { Authorization: `Bearer ${adminToken}` } : {})
+          },
+          body: JSON.stringify(itemToSave)
+        });
+        if (apiRes.ok) {
+          serverSaved = true;
+        } else {
+          console.warn('[AdminDashboard] Server save returned:', apiRes.status);
+        }
+      } catch (apiErr) {
+        console.warn('Server API save error:', apiErr);
+      }
+
+      // 2. Save to Firestore (primary persistent storage)
+      let firestoreSaved = false;
+      try {
+        await saveContent(itemToSave, isEditing);
+        firestoreSaved = true;
+      } catch (fsErr) {
+        console.warn('Firestore save non-blocking warning:', fsErr);
+      }
+
+      if (!serverSaved && !firestoreSaved) {
+        throw new Error('Failed to save to both server and Firestore. Please check your connection.');
+      }
 
       setSaveSuccessMessage(
         itemToSave.published 
-          ? `Successfully saved to Cloud Firestore and published to PiFlix+!`
+          ? `Successfully saved and published to PiFlix+!`
           : `Saved content draft successfully!`
       );
 
@@ -632,11 +1096,15 @@ export const AdminDashboard: React.FC = () => {
     }
   };
 
-  // Combine movies and series for unified catalog table (Requirement 18 & 19)
+  // Combine movies and series for unified catalog table with newest/recently modified first (Requirement 19 & 20)
   const allCatalogItems = [
     ...movies.map(m => ({ ...m, type: 'movie' as const })),
     ...seriesList.map(s => ({ ...s, type: 'series' as const }))
-  ];
+  ].sort((a, b) => {
+    const timeA = new Date(a.updatedAt || (a as any).modifiedAt || a.createdAt || (a as any).publishedAt || 0).getTime();
+    const timeB = new Date(b.updatedAt || (b as any).modifiedAt || b.createdAt || (b as any).publishedAt || 0).getTime();
+    return timeB - timeA;
+  });
 
   // Apply search and filters (Requirement 19)
   const filteredCatalogItems = allCatalogItems.filter(item => {
@@ -883,7 +1351,19 @@ export const AdminDashboard: React.FC = () => {
             className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-pink-600 hover:bg-pink-500 text-white text-xs font-bold shadow-lg shadow-pink-900/30 transition"
           >
             <Plus className="w-4 h-4" />
-            <span>Upload TV Series</span>
+            <span>Upload Series</span>
+          </button>
+
+          <button
+            onClick={() => {
+              setBatchMovieFiles([]);
+              setBatchMovieResults([]);
+              setIsBatchMovieModalOpen(true);
+            }}
+            className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-indigo-600/90 hover:bg-indigo-500 text-white text-xs font-bold shadow-lg shadow-indigo-900/30 border border-indigo-500/40 transition"
+          >
+            <UploadCloud className="w-4 h-4" />
+            <span>Batch Movies</span>
           </button>
 
           <button
@@ -1013,7 +1493,7 @@ export const AdminDashboard: React.FC = () => {
                 >
                   <option value="all">All Formats</option>
                   <option value="movie">Movies Only</option>
-                  <option value="series">TV Series Only</option>
+                  <option value="series">Series Only</option>
                 </select>
 
                 {/* Publish Status Filter */}
@@ -1170,7 +1650,7 @@ export const AdminDashboard: React.FC = () => {
 
                           {/* Release Year & Language */}
                           <td className="py-3 px-4 text-zinc-300">
-                            <div>{item.year}</div>
+                            <div>{item.year} {isSeries ? `• ${(item as any).seasonsCount || 1}S` : `• ${formatDuration((item as any).duration || 90)}`}</div>
                             <div className="text-[10px] text-zinc-500">{item.language || 'English'}</div>
                           </td>
 
@@ -1288,7 +1768,7 @@ export const AdminDashboard: React.FC = () => {
 
             <div className="p-4 rounded-xl bg-zinc-900/80 border border-zinc-800">
               <div className="text-xs text-zinc-400 flex items-center justify-between">
-                <span>TV Series</span>
+                <span>Series</span>
                 <Tv className="w-4 h-4 text-pink-400" />
               </div>
               <div className="text-2xl font-black text-white mt-1">{seriesList.length}</div>
@@ -1313,6 +1793,279 @@ export const AdminDashboard: React.FC = () => {
               <span className="text-[10px] text-purple-400">Ad-Free Streamers</span>
             </div>
           </div>
+
+          {/* ================================================================ */}
+          {/* REAL VISITOR ANALYTICS SECTION                                   */}
+          {/* ================================================================ */}
+          {(() => {
+            const visitorMetrics = visitorAnalytics?.metrics || overviewStats?.visitorAnalytics?.metrics || {
+              today: 0,
+              thisWeek: 0,
+              thisMonth: 0,
+              thisYear: 0,
+              totalVisitors: 0
+            };
+
+            const visitorSources = visitorAnalytics?.trafficSources || overviewStats?.visitorAnalytics?.trafficSources || {
+              piBrowser: 0,
+              externalWeb: 0
+            };
+
+            const totalSourceCount = (visitorSources.piBrowser + visitorSources.externalWeb) || 1;
+            const piBrowserPercent = Math.round((visitorSources.piBrowser / totalSourceCount) * 100);
+            const externalWebPercent = 100 - piBrowserPercent;
+
+            const recentVisitorsList = visitorAnalytics?.recentVisitors || overviewStats?.visitorAnalytics?.recentVisitors || [];
+
+            return (
+              <div className="p-6 rounded-2xl bg-zinc-900/90 border border-zinc-800 shadow-2xl space-y-6">
+                {/* Header with LIVE badge and Refresh Button */}
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-zinc-800">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-xl bg-purple-600/20 border border-purple-500/30 flex items-center justify-center text-purple-400">
+                      <Users className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h2 className="text-base font-bold text-white tracking-wide">REAL VISITOR ANALYTICS</h2>
+                        <span className="flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                          LIVE
+                        </span>
+                      </div>
+                      <p className="text-xs text-zinc-400">
+                        Persistent unique visitor count tracking &bull; Verified Pi Browser and Web traffic
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={fetchVisitorAnalytics}
+                      disabled={refreshingVisitors}
+                      className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-semibold transition disabled:opacity-50"
+                      title="Refresh visitor analytics"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 text-purple-400 ${refreshingVisitors ? 'animate-spin' : ''}`} />
+                      <span>Refresh</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* 5 Core Unique Metrics Grid */}
+                <div>
+                  <div className="text-xs font-bold text-zinc-400 uppercase tracking-wider mb-3">
+                    Unique Visitors
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+                    {/* 1. Today */}
+                    <div className="p-4 rounded-xl bg-zinc-950/60 border border-zinc-800 flex flex-col justify-between">
+                      <div className="flex items-center justify-between text-zinc-400 text-xs">
+                        <span>Today</span>
+                        <Clock className="w-3.5 h-3.5 text-purple-400" />
+                      </div>
+                      <div className="text-2xl font-black text-white my-1">
+                        {visitorMetrics.today.toLocaleString()}
+                      </div>
+                      <span className="text-[10px] text-zinc-500">Unique visitors today</span>
+                    </div>
+
+                    {/* 2. This Week */}
+                    <div className="p-4 rounded-xl bg-zinc-950/60 border border-zinc-800 flex flex-col justify-between">
+                      <div className="flex items-center justify-between text-zinc-400 text-xs">
+                        <span>This Week</span>
+                        <Calendar className="w-3.5 h-3.5 text-pink-400" />
+                      </div>
+                      <div className="text-2xl font-black text-white my-1">
+                        {visitorMetrics.thisWeek.toLocaleString()}
+                      </div>
+                      <span className="text-[10px] text-zinc-500">Current calendar week</span>
+                    </div>
+
+                    {/* 3. This Month */}
+                    <div className="p-4 rounded-xl bg-zinc-950/60 border border-zinc-800 flex flex-col justify-between">
+                      <div className="flex items-center justify-between text-zinc-400 text-xs">
+                        <span>This Month</span>
+                        <TrendingUp className="w-3.5 h-3.5 text-indigo-400" />
+                      </div>
+                      <div className="text-2xl font-black text-white my-1">
+                        {visitorMetrics.thisMonth.toLocaleString()}
+                      </div>
+                      <span className="text-[10px] text-zinc-500">Current month</span>
+                    </div>
+
+                    {/* 4. This Year */}
+                    <div className="p-4 rounded-xl bg-zinc-950/60 border border-zinc-800 flex flex-col justify-between">
+                      <div className="flex items-center justify-between text-zinc-400 text-xs">
+                        <span>This Year</span>
+                        <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                      </div>
+                      <div className="text-2xl font-black text-white my-1">
+                        {visitorMetrics.thisYear.toLocaleString()}
+                      </div>
+                      <span className="text-[10px] text-zinc-500">Current year</span>
+                    </div>
+
+                    {/* 5. Total Visitors */}
+                    <div className="col-span-2 sm:col-span-1 p-4 rounded-xl bg-gradient-to-br from-purple-950/40 to-zinc-950 border border-purple-800/40 flex flex-col justify-between">
+                      <div className="flex items-center justify-between text-purple-300 text-xs">
+                        <span>Total Visitors</span>
+                        <Award className="w-3.5 h-3.5 text-purple-400" />
+                      </div>
+                      <div className="text-2xl font-black text-purple-300 my-1">
+                        {visitorMetrics.totalVisitors.toLocaleString()}
+                      </div>
+                      <span className="text-[10px] text-purple-400/80">All-time unique</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Traffic Sources Breakdown */}
+                <div className="p-4 rounded-xl bg-zinc-950/60 border border-zinc-800 space-y-3">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-bold text-zinc-300 uppercase tracking-wider">Traffic Sources Breakdown</span>
+                    <span className="text-[11px] text-zinc-500">Dual-source classification</span>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {/* Pi Browser */}
+                    <div className="p-3.5 rounded-lg bg-zinc-900/80 border border-purple-900/40 flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <div className="w-8 h-8 rounded-lg bg-purple-600/20 text-purple-400 flex items-center justify-center font-black text-sm">
+                          π
+                        </div>
+                        <div>
+                          <div className="text-xs font-bold text-white flex items-center gap-1.5">
+                            <span>Pi Browser / Pi Ecosystem</span>
+                            <span className="px-1.5 py-0.2 rounded text-[9px] bg-purple-900/60 text-purple-300">Pi App</span>
+                          </div>
+                          <div className="text-[10px] text-zinc-400">Pi Browser pioneers & Pi accounts</div>
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <div className="text-lg font-black text-purple-400">
+                          {visitorSources.piBrowser.toLocaleString()}
+                        </div>
+                        <div className="text-[10px] text-zinc-500">{piBrowserPercent}% of total</div>
+                      </div>
+                    </div>
+
+                    {/* External / Web */}
+                    <div className="p-3.5 rounded-lg bg-zinc-900/80 border border-zinc-800 flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <div className="w-8 h-8 rounded-lg bg-sky-600/20 text-sky-400 flex items-center justify-center">
+                          <Globe className="w-4 h-4" />
+                        </div>
+                        <div>
+                          <div className="text-xs font-bold text-white flex items-center gap-1.5">
+                            <span>External / Web Links</span>
+                            <span className="px-1.5 py-0.2 rounded text-[9px] bg-sky-900/60 text-sky-300">Web</span>
+                          </div>
+                          <div className="text-[10px] text-zinc-400">Direct URLs & standard web browsers</div>
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <div className="text-lg font-black text-sky-400">
+                          {visitorSources.externalWeb.toLocaleString()}
+                        </div>
+                        <div className="text-[10px] text-zinc-500">{externalWebPercent}% of total</div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Split bar */}
+                  <div className="space-y-1 pt-1">
+                    <div className="h-2 w-full bg-zinc-800 rounded-full overflow-hidden flex">
+                      <div
+                        style={{ width: `${piBrowserPercent}%` }}
+                        className="h-full bg-purple-500 transition-all duration-500"
+                        title={`Pi Browser: ${piBrowserPercent}%`}
+                      />
+                      <div
+                        style={{ width: `${externalWebPercent}%` }}
+                        className="h-full bg-sky-500 transition-all duration-500"
+                        title={`External Web: ${externalWebPercent}%`}
+                      />
+                    </div>
+                    <div className="flex items-center justify-between text-[10px] text-zinc-500">
+                      <span className="flex items-center gap-1">
+                        <span className="w-2 h-2 rounded-full bg-purple-500 inline-block" />
+                        Pi Browser ({piBrowserPercent}%)
+                      </span>
+                      <span className="flex items-center gap-1">
+                        <span className="w-2 h-2 rounded-full bg-sky-500 inline-block" />
+                        External / Web ({externalWebPercent}%)
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Privacy-Safe Recent Visitor Activity */}
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-bold text-zinc-300 uppercase tracking-wider">Recent Active Visitors (Anonymous)</span>
+                    <span className="text-[10px] text-zinc-500">Privacy-conscious identifiers &bull; Deduplicated sessions</span>
+                  </div>
+
+                  {recentVisitorsList.length === 0 ? (
+                    <div className="p-6 text-center text-xs text-zinc-500 rounded-xl bg-zinc-950/40 border border-zinc-800/60">
+                      No public visitor sessions recorded yet. Visitors accessing PiFlix+ will appear here automatically.
+                    </div>
+                  ) : (
+                    <div className="rounded-xl border border-zinc-800 overflow-hidden">
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-left text-xs">
+                          <thead>
+                            <tr className="bg-zinc-950/80 text-zinc-400 border-b border-zinc-800 text-[10px] uppercase font-semibold">
+                              <th className="py-2.5 px-3">Visitor ID (Masked)</th>
+                              <th className="py-2.5 px-3">Source</th>
+                              <th className="py-2.5 px-3">First Seen</th>
+                              <th className="py-2.5 px-3">Last Active</th>
+                              <th className="py-2.5 px-3 text-right">Sessions</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-zinc-800/60 bg-zinc-950/30">
+                            {recentVisitorsList.map((vis, idx) => (
+                              <tr key={idx} className="hover:bg-zinc-800/30 transition">
+                                <td className="py-2.5 px-3 font-mono text-[11px] text-zinc-300">
+                                  {vis.visitorId}
+                                  {vis.piUsername && (
+                                    <span className="ml-2 text-[10px] text-purple-400 font-sans">
+                                      ({vis.piUsername})
+                                    </span>
+                                  )}
+                                </td>
+                                <td className="py-2.5 px-3">
+                                  {vis.source === 'pi_browser' ? (
+                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-purple-900/40 text-purple-300 border border-purple-700/50">
+                                      <span>π</span> Pi Browser
+                                    </span>
+                                  ) : (
+                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-zinc-800 text-zinc-300 border border-zinc-700/50">
+                                      <Globe className="w-2.5 h-2.5 text-sky-400" /> External / Web
+                                    </span>
+                                  )}
+                                </td>
+                                <td className="py-2.5 px-3 text-zinc-400 text-[11px]">
+                                  {new Date(vis.firstSeen).toLocaleDateString()} {new Date(vis.firstSeen).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                </td>
+                                <td className="py-2.5 px-3 text-zinc-300 text-[11px]">
+                                  {new Date(vis.lastSeen).toLocaleDateString()} {new Date(vis.lastSeen).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                </td>
+                                <td className="py-2.5 px-3 text-right font-bold text-white text-[11px]">
+                                  {vis.visitCount || 1}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
 
           <div className="p-5 rounded-2xl bg-zinc-900/80 border border-zinc-800 space-y-3">
             <h3 className="text-sm font-bold text-white flex items-center gap-2">
@@ -1647,7 +2400,7 @@ export const AdminDashboard: React.FC = () => {
                 </div>
                 <div>
                   <h2 className="text-lg font-black text-white">
-                    {isEditing ? `Edit ${contentType === 'movie' ? 'Movie' : 'TV Series'}` : `Upload New ${contentType === 'movie' ? 'Movie' : 'TV Series'}`}
+                    {isEditing ? `Edit ${contentType === 'movie' ? 'Movie' : 'Series'}` : `Upload New ${contentType === 'movie' ? 'Movie' : 'Series'}`}
                   </h2>
                   <p className="text-[11px] text-zinc-400">
                     Fill in metadata, upload video and cover images, and publish to PiFlix+.
@@ -1716,7 +2469,7 @@ export const AdminDashboard: React.FC = () => {
                     }`}
                   >
                     <Tv className="w-4 h-4" />
-                    <span>TV Series Show</span>
+                    <span>Series</span>
                   </button>
                 </div>
               </div>
@@ -1813,7 +2566,28 @@ export const AdminDashboard: React.FC = () => {
 
               {/* REQUIREMENT 1 & 16: Upload Video File (Only for Movie, or main pilot) */}
               {contentType === 'movie' && (
-                <div className="p-4 rounded-2xl bg-zinc-950/80 border border-zinc-800 space-y-3">
+                <div 
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    setIsDragOverVideo(true);
+                  }}
+                  onDragLeave={(e) => {
+                    e.preventDefault();
+                    setIsDragOverVideo(false);
+                  }}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    setIsDragOverVideo(false);
+                    if (e.dataTransfer.files?.[0]) {
+                      handleVideoFileUpload(e.dataTransfer.files[0]);
+                    }
+                  }}
+                  className={`p-4 rounded-2xl bg-zinc-950/80 border transition-all space-y-3 ${
+                    isDragOverVideo 
+                      ? 'border-purple-500 bg-purple-950/20 shadow-lg shadow-purple-950/50 scale-[1.01]' 
+                      : 'border-zinc-800'
+                  }`}
+                >
                   <div className="flex items-center justify-between">
                     <label className="text-[11px] font-bold text-zinc-300 uppercase tracking-wider flex items-center gap-1.5">
                       <FileVideo className="w-4 h-4 text-purple-400" />
@@ -1846,8 +2620,14 @@ export const AdminDashboard: React.FC = () => {
                         <Upload className="w-4 h-4" />
                         <span>{videoUrl ? 'Replace Video File' : 'Upload Video File to Cloud Storage'}</span>
                       </button>
-                      <span className="text-[10px] text-zinc-500">Supports up to 2GB per video with HTTP Range streaming</span>
+                      <span className="text-[10px] text-zinc-500">Supports drag & drop, chunked uploads up to 2GB</span>
                     </div>
+
+                    {isDragOverVideo && (
+                      <div className="py-4 text-center border border-dashed border-purple-500/60 rounded-xl bg-purple-900/10 text-xs font-semibold text-purple-300 animate-pulse">
+                        Drop video file here to upload directly to Cloud Storage...
+                      </div>
+                    )}
 
                     <div className="space-y-1">
                       <input
@@ -1857,6 +2637,54 @@ export const AdminDashboard: React.FC = () => {
                         placeholder="Or specify streaming URL / Google Cloud Storage / S3 / R2 URL"
                         className="w-full px-3 py-2 bg-zinc-900 border border-zinc-800 rounded-lg text-xs text-white placeholder:text-zinc-600 focus:outline-none focus:border-purple-500 font-mono"
                       />
+                    </div>
+
+                    {/* Movie Real Duration & Detection Controls */}
+                    <div className="pt-2.5 border-t border-zinc-800/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <div className="flex items-center gap-3 flex-wrap">
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider flex items-center gap-1">
+                            <Clock className="w-3 h-3 text-purple-400" />
+                            <span>Movie Duration (Minutes) *</span>
+                          </label>
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="number"
+                              min="1"
+                              max="600"
+                              required
+                              value={movieDuration}
+                              onChange={e => {
+                                setMovieDuration(Math.max(1, parseInt(e.target.value) || 1));
+                                setDetectedDurationNotice(null);
+                              }}
+                              className="w-24 px-3 py-1.5 bg-zinc-900 border border-zinc-800 rounded-lg text-xs text-white font-mono focus:outline-none focus:border-purple-500"
+                            />
+                            <span className="text-xs text-zinc-400 font-medium">
+                              ({formatDuration(movieDuration)})
+                            </span>
+                          </div>
+                        </div>
+
+                        {videoUrl && (
+                          <button
+                            type="button"
+                            onClick={() => handleDetectDuration(videoUrl)}
+                            disabled={isDetectingDuration}
+                            className="mt-4 px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white text-[11px] font-semibold flex items-center gap-1.5 transition disabled:opacity-50"
+                          >
+                            <RefreshCw className={`w-3 h-3 ${isDetectingDuration ? 'animate-spin text-purple-400' : ''}`} />
+                            <span>{isDetectingDuration ? 'Detecting Duration...' : 'Detect Real Duration'}</span>
+                          </button>
+                        )}
+                      </div>
+
+                      {detectedDurationNotice && (
+                        <div className="text-[11px] text-emerald-400 bg-emerald-950/40 border border-emerald-800/50 rounded-lg px-2.5 py-1.5 flex items-center gap-1.5">
+                          <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                          <span>{detectedDurationNotice}</span>
+                        </div>
+                      )}
                     </div>
                   </div>
 
@@ -1874,112 +2702,353 @@ export const AdminDashboard: React.FC = () => {
                 </div>
               )}
 
-              {/* REQUIREMENT 13: Multiple Episodes Builder for TV Series */}
-              {contentType === 'series' && (
-                <div className="p-4 rounded-2xl bg-zinc-950/80 border border-pink-900/40 space-y-4">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <h3 className="text-xs font-bold text-white flex items-center gap-1.5">
-                        <Tv className="w-4 h-4 text-pink-400" />
-                        <span>Episodes Management ({episodes.length} Episodes)</span>
-                      </h3>
-                      <p className="text-[10px] text-zinc-400">Add, upload videos, and organize all episodes for this TV series.</p>
+              {/* Season & Episodes Management for TV Series */}
+              {contentType === 'series' && (() => {
+                const sortedSeasons = [...seasons].sort((a, b) => {
+                  const timeA = new Date((a as any).updatedAt || (a as any).createdAt || 0).getTime();
+                  const timeB = new Date((b as any).updatedAt || (b as any).createdAt || 0).getTime();
+                  if (timeA && timeB && timeA !== timeB) return timeB - timeA;
+                  return (Number(b.seasonNumber) || 0) - (Number(a.seasonNumber) || 0);
+                });
+                const activeSeason = seasons.find(s => s.seasonNumber === activeSeasonNumber) || sortedSeasons[0] || {
+                  seasonNumber: 1,
+                  seasonName: 'Season 1',
+                  title: 'Season 1'
+                };
+                const activeSeasonEpisodes = episodes
+                  .filter(e => (e.seasonNumber || 1) === activeSeason.seasonNumber)
+                  .sort((a, b) => {
+                    const timeA = new Date((a as any).updatedAt || (a as any).createdAt || 0).getTime();
+                    const timeB = new Date((b as any).updatedAt || (b as any).createdAt || 0).getTime();
+                    if (timeA && timeB && timeA !== timeB) return timeB - timeA;
+                    return (Number(b.episodeNumber) || 0) - (Number(a.episodeNumber) || 0);
+                  });
+
+                return (
+                  <div className="p-4 rounded-2xl bg-zinc-950/90 border border-pink-900/40 space-y-4">
+                    {/* Header with TV icon, total count, and Add Season button */}
+                    <div className="flex flex-wrap items-center justify-between gap-2 border-b border-zinc-800/80 pb-3">
+                      <div>
+                        <h3 className="text-xs font-bold text-white flex items-center gap-1.5">
+                          <Tv className="w-4 h-4 text-pink-400" />
+                          <span>Seasons & Episodes Management</span>
+                        </h3>
+                        <p className="text-[10px] text-zinc-400">
+                          Total {seasons.length} Season{seasons.length > 1 ? 's' : ''} • {episodes.length} Episode{episodes.length > 1 ? 's' : ''} across all seasons
+                        </p>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={handleAddSeason}
+                        className="flex items-center gap-1 px-3 py-1.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-bold text-[11px] transition shadow"
+                        title="Add a new season to this TV series"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        <span>Add Season</span>
+                      </button>
                     </div>
 
-                    <button
-                      type="button"
-                      onClick={handleAddEpisode}
-                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-pink-600 hover:bg-pink-500 text-white font-bold text-[11px] transition shadow"
-                    >
-                      <Plus className="w-3.5 h-3.5" />
-                      <span>Add Episode</span>
-                    </button>
-                  </div>
-
-                  <div className="space-y-3">
-                    {episodes.map((ep, idx) => (
-                      <div key={idx} className="p-3 rounded-xl bg-zinc-900/90 border border-zinc-800 space-y-2">
-                        <div className="flex items-center justify-between">
-                          <span className="font-bold text-pink-400 text-xs">Episode {ep.episodeNumber}</span>
-                          {episodes.length > 1 && (
-                            <button
-                              type="button"
-                              onClick={() => handleRemoveEpisode(idx)}
-                              className="text-zinc-500 hover:text-red-400 transition"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
-                          )}
-                        </div>
-
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                          <input
-                            type="text"
-                            placeholder="Episode Title"
-                            value={ep.title}
-                            onChange={e => {
-                              const next = [...episodes];
-                              next[idx].title = e.target.value;
-                              setEpisodes(next);
-                            }}
-                            className="px-3 py-1.5 bg-zinc-950 border border-zinc-800 rounded-lg text-xs text-white"
-                          />
-                          <input
-                            type="number"
-                            placeholder="Duration (minutes)"
-                            value={ep.duration}
-                            onChange={e => {
-                              const next = [...episodes];
-                              next[idx].duration = parseInt(e.target.value) || 45;
-                              setEpisodes(next);
-                            }}
-                            className="px-3 py-1.5 bg-zinc-950 border border-zinc-800 rounded-lg text-xs text-white"
-                          />
-                        </div>
-
-                        {/* Episode video upload or URL */}
-                        <div className="space-y-1">
-                          <div className="flex items-center gap-2">
-                            <input
-                              type="file"
-                              accept="video/*"
-                              id={`ep-video-${idx}`}
-                              onChange={e => {
-                                if (e.target.files?.[0]) handleVideoFileUpload(e.target.files[0], idx);
-                              }}
-                              className="hidden"
-                            />
-                            <button
-                              type="button"
-                              onClick={() => document.getElementById(`ep-video-${idx}`)?.click()}
-                              disabled={uploadingEpisodeIdx === idx}
-                              className="px-2.5 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-[10px] font-bold flex items-center gap-1 transition"
-                            >
-                              <Upload className="w-3 h-3" />
-                              <span>{uploadingEpisodeIdx === idx ? 'Uploading...' : 'Upload Video File'}</span>
-                            </button>
-                            <span className="text-[10px] text-zinc-500 truncate max-w-xs">
-                              {ep.videoUrl ? '✓ Video attached' : 'No video attached'}
+                    {/* Season Selector Tabs */}
+                    <div className="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-none">
+                      {seasons.map((sn, idx) => {
+                        const count = episodes.filter(e => (e.seasonNumber || 1) === sn.seasonNumber).length;
+                        const isCurrent = sn.seasonNumber === activeSeason.seasonNumber;
+                        return (
+                          <button
+                            key={sn.id || idx}
+                            type="button"
+                            onClick={() => setActiveSeasonNumber(sn.seasonNumber)}
+                            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 shrink-0 border ${
+                              isCurrent
+                                ? 'bg-gradient-to-r from-pink-600 to-purple-600 text-white border-pink-400 shadow-md shadow-pink-900/30'
+                                : 'bg-zinc-900/80 hover:bg-zinc-800 text-zinc-300 border-zinc-800 hover:border-zinc-700'
+                            }`}
+                          >
+                            <span>{sn.seasonName || `Season ${sn.seasonNumber}`}</span>
+                            <span className={`text-[10px] px-1.5 py-0.2 rounded-full ${
+                              isCurrent ? 'bg-black/40 text-pink-200' : 'bg-zinc-800 text-zinc-400'
+                            }`}>
+                              {count} ep{count !== 1 ? 's' : ''}
                             </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    {/* Active Season Config Card */}
+                    <div className="p-3.5 rounded-xl bg-zinc-900/80 border border-zinc-800 space-y-3">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div className="flex flex-wrap items-center gap-3 flex-1 min-w-[280px]">
+                          {/* Season Name / Label */}
+                          <div className="flex-1 min-w-[160px]">
+                            <label className="block text-[10px] font-bold text-zinc-400 uppercase tracking-wider mb-1">
+                              Season Name / Number
+                            </label>
+                            <input
+                              type="text"
+                              value={activeSeason.seasonName}
+                              onChange={e => {
+                                const val = e.target.value;
+                                setSeasons(prev => prev.map(s => 
+                                  s.seasonNumber === activeSeason.seasonNumber 
+                                    ? { ...s, seasonName: val, title: val } 
+                                    : s
+                                ));
+                              }}
+                              placeholder="e.g. Season 1, Season 10, Final Season"
+                              className="w-full px-3 py-1.5 bg-zinc-950 border border-zinc-700 rounded-lg text-xs text-white font-medium focus:outline-none focus:border-pink-500"
+                            />
                           </div>
 
+                          {/* Numeric Season Number */}
+                          <div className="w-28">
+                            <label className="block text-[10px] font-bold text-zinc-400 uppercase tracking-wider mb-1">
+                              Season #
+                            </label>
+                            <input
+                              type="number"
+                              min="1"
+                              value={activeSeason.seasonNumber}
+                              onChange={e => {
+                                const newNum = Math.max(1, parseInt(e.target.value) || 1);
+                                const oldNum = activeSeason.seasonNumber;
+                                if (newNum === oldNum) return;
+                                setSeasons(prev => prev.map(s => 
+                                  s.seasonNumber === oldNum 
+                                    ? { ...s, seasonNumber: newNum } 
+                                    : s
+                                ));
+                                setEpisodes(prev => prev.map(ep => 
+                                  (ep.seasonNumber || 1) === oldNum 
+                                    ? { ...ep, seasonNumber: newNum } 
+                                    : ep
+                                ));
+                                setActiveSeasonNumber(newNum);
+                              }}
+                              className="w-full px-3 py-1.5 bg-zinc-950 border border-zinc-700 rounded-lg text-xs text-white font-mono text-center focus:outline-none focus:border-pink-500"
+                            />
+                          </div>
+                        </div>
+
+                        {seasons.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveSeason(activeSeason.seasonNumber)}
+                            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-zinc-400 hover:text-red-400 hover:bg-red-950/30 text-[11px] font-semibold border border-transparent hover:border-red-900/50 transition self-end"
+                            title="Delete this entire season and its episodes"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            <span>Delete Season</span>
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Episodes for Active Season */}
+                    <div className="space-y-3 pt-1">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-bold text-pink-300">
+                            Episodes in {activeSeason.seasonName || `Season ${activeSeason.seasonNumber}`}
+                          </span>
+                          <span className="text-[10px] px-2 py-0.5 rounded-full bg-pink-950/60 border border-pink-900/50 text-pink-300 font-mono">
+                            {activeSeasonEpisodes.length} episode{activeSeasonEpisodes.length !== 1 ? 's' : ''}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center gap-2">
                           <input
-                            type="text"
-                            placeholder="Video streaming URL (https://... or /uploads/videos/...)"
-                            value={ep.videoUrl}
+                            type="file"
+                            accept="video/*"
+                            multiple
+                            ref={batchEpisodesInputRef}
                             onChange={e => {
-                              const next = [...episodes];
-                              next[idx].videoUrl = e.target.value;
-                              setEpisodes(next);
+                              if (e.target.files && e.target.files.length > 0) {
+                                handleBatchEpisodeUpload(Array.from(e.target.files));
+                              }
                             }}
-                            className="w-full px-3 py-1 bg-zinc-950 border border-zinc-800 rounded-lg text-[11px] text-zinc-300 font-mono"
+                            className="hidden"
                           />
+                          <button
+                            type="button"
+                            onClick={() => batchEpisodesInputRef.current?.click()}
+                            disabled={isBatchEpisodesUploading}
+                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-pink-300 font-bold text-[11px] border border-pink-900/60 transition shadow disabled:opacity-50"
+                            title="Upload multiple videos sequentially into this season"
+                          >
+                            <FolderUp className="w-3.5 h-3.5" />
+                            <span>Batch Upload for {activeSeason.seasonName || `Season ${activeSeason.seasonNumber}`}</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => handleAddEpisode(activeSeason.seasonNumber)}
+                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-pink-600 hover:bg-pink-500 text-white font-bold text-[11px] transition shadow"
+                          >
+                            <Plus className="w-3.5 h-3.5" />
+                            <span>Add Episode</span>
+                          </button>
                         </div>
                       </div>
-                    ))}
+
+                      {isBatchEpisodesUploading && (
+                        <div className="p-3 bg-pink-950/40 border border-pink-800/60 rounded-xl space-y-1.5">
+                          <div className="flex justify-between text-[11px] text-pink-300">
+                            <span>Uploading to {activeSeason.seasonName}: Episode {batchEpisodeProgress.completed + 1} of {batchEpisodeProgress.total}: {batchEpisodeProgress.currentName}</span>
+                            <span>{Math.round((batchEpisodeProgress.completed / batchEpisodeProgress.total) * 100)}%</span>
+                          </div>
+                          <div className="w-full bg-zinc-900 rounded-full h-2 overflow-hidden">
+                            <div 
+                              className="bg-gradient-to-r from-pink-500 to-purple-500 h-2 transition-all duration-300" 
+                              style={{ width: `${Math.round((batchEpisodeProgress.completed / batchEpisodeProgress.total) * 100)}%` }} 
+                            />
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Episode List */}
+                      {activeSeasonEpisodes.length === 0 ? (
+                        <div className="p-6 text-center rounded-xl bg-zinc-900/40 border border-dashed border-zinc-800 text-zinc-400 text-xs">
+                          No episodes in this season yet. Click <span className="text-pink-400 font-bold">+ Add Episode</span> or <span className="text-pink-400 font-bold">Batch Upload Videos</span> to populate this season.
+                        </div>
+                      ) : (
+                        <div className="space-y-3 max-h-[460px] overflow-y-auto pr-1">
+                          {activeSeasonEpisodes.map((ep) => {
+                            const globalIndex = episodes.findIndex(e => e.id === ep.id);
+                            return (
+                              <div key={ep.id || globalIndex} className="p-3 rounded-xl bg-zinc-900/90 border border-zinc-800 space-y-2">
+                                <div className="flex items-center justify-between">
+                                  <div className="flex items-center gap-2">
+                                    <span className="font-bold text-pink-400 text-xs">
+                                      Episode {ep.episodeNumber}
+                                    </span>
+                                    <span className="text-[10px] text-zinc-500">
+                                      in {activeSeason.seasonName || `Season ${activeSeason.seasonNumber}`}
+                                    </span>
+                                  </div>
+
+                                  <button
+                                    type="button"
+                                    onClick={() => handleRemoveEpisode(ep.id || globalIndex)}
+                                    className="text-zinc-500 hover:text-red-400 p-1 transition"
+                                    title="Delete episode"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+
+                                <div className="grid grid-cols-1 sm:grid-cols-12 gap-2">
+                                  {/* Episode Number - editable */}
+                                  <div className="sm:col-span-2">
+                                    <label className="block text-[9px] text-zinc-500 uppercase font-semibold mb-0.5">Ep #</label>
+                                    <input
+                                      type="number"
+                                      min="1"
+                                      value={ep.episodeNumber}
+                                      onChange={e => {
+                                        const val = Math.max(1, parseInt(e.target.value) || 1);
+                                        setEpisodes(prev => prev.map(item => item.id === ep.id ? { ...item, episodeNumber: val } : item));
+                                      }}
+                                      className="w-full px-2.5 py-1.5 bg-zinc-950 border border-zinc-800 rounded-lg text-xs text-white font-mono"
+                                    />
+                                  </div>
+
+                                  {/* Episode Title */}
+                                  <div className="sm:col-span-6">
+                                    <label className="block text-[9px] text-zinc-500 uppercase font-semibold mb-0.5">Title</label>
+                                    <input
+                                      type="text"
+                                      placeholder="Episode Title"
+                                      value={ep.title}
+                                      onChange={e => {
+                                        const val = e.target.value;
+                                        setEpisodes(prev => prev.map(item => item.id === ep.id ? { ...item, title: val } : item));
+                                      }}
+                                      className="w-full px-3 py-1.5 bg-zinc-950 border border-zinc-800 rounded-lg text-xs text-white"
+                                    />
+                                  </div>
+
+                                  {/* Duration */}
+                                  <div className="sm:col-span-4">
+                                    <label className="block text-[9px] text-zinc-500 uppercase font-semibold mb-0.5">Duration</label>
+                                    <div className="flex items-center gap-1.5">
+                                      <input
+                                        type="number"
+                                        min="1"
+                                        max="300"
+                                        placeholder="Min"
+                                        value={ep.duration}
+                                        onChange={e => {
+                                          const val = Math.max(1, parseInt(e.target.value) || 1);
+                                          setEpisodes(prev => prev.map(item => item.id === ep.id ? { ...item, duration: val } : item));
+                                        }}
+                                        className="w-16 px-2 py-1.5 bg-zinc-950 border border-zinc-800 rounded-lg text-xs text-white"
+                                      />
+                                      <span className="text-[10px] text-zinc-400 font-medium">
+                                        {formatDuration(ep.duration)}
+                                      </span>
+                                      {ep.videoUrl && (
+                                        <button
+                                          type="button"
+                                          onClick={() => handleDetectDuration(ep.videoUrl, globalIndex)}
+                                          title="Detect duration from video"
+                                          className="px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-[10px] font-semibold flex items-center gap-1 transition"
+                                        >
+                                          <Clock className="w-2.5 h-2.5 text-pink-400" />
+                                          <span>Detect</span>
+                                        </button>
+                                      )}
+                                    </div>
+                                  </div>
+                                </div>
+
+                                {/* Video Upload / URL */}
+                                <div className="space-y-1 pt-1">
+                                  <div className="flex items-center gap-2">
+                                    <input
+                                      type="file"
+                                      accept="video/*"
+                                      id={`ep-video-${ep.id || globalIndex}`}
+                                      onChange={e => {
+                                        if (e.target.files?.[0]) handleVideoFileUpload(e.target.files[0], globalIndex);
+                                      }}
+                                      className="hidden"
+                                    />
+                                    <button
+                                      type="button"
+                                      onClick={() => document.getElementById(`ep-video-${ep.id || globalIndex}`)?.click()}
+                                      disabled={uploadingEpisodeIdx === globalIndex}
+                                      className="px-2.5 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-[10px] font-bold flex items-center gap-1 transition"
+                                    >
+                                      <Upload className="w-3 h-3" />
+                                      <span>{uploadingEpisodeIdx === globalIndex ? 'Uploading...' : 'Upload Video File'}</span>
+                                    </button>
+                                    <span className="text-[10px] text-zinc-500 truncate max-w-xs">
+                                      {ep.videoUrl ? '✓ Video attached' : 'No video attached'}
+                                    </span>
+                                  </div>
+
+                                  <input
+                                    type="text"
+                                    placeholder="Video streaming URL (https://... or /uploads/videos/...)"
+                                    value={ep.videoUrl}
+                                    onChange={e => {
+                                      const val = e.target.value;
+                                      setEpisodes(prev => prev.map(item => item.id === ep.id ? { ...item, videoUrl: val } : item));
+                                    }}
+                                    className="w-full px-3 py-1 bg-zinc-950 border border-zinc-800 rounded-lg text-[11px] text-zinc-300 font-mono"
+                                  />
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
                   </div>
-                </div>
-              )}
+                );
+              })()}
 
               {/* Metadata Grid (Requirements 6, 7, 8, 9, 10, 11, 12) */}
               <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
@@ -2196,6 +3265,166 @@ export const AdminDashboard: React.FC = () => {
                   </>
                 )}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Batch Movie Upload Modal */}
+      {isBatchMovieModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md overflow-y-auto">
+          <div className="relative w-full max-w-xl bg-zinc-900 border border-zinc-800 rounded-2xl shadow-2xl p-6 space-y-5 my-8">
+            <div className="flex items-center justify-between border-b border-zinc-800 pb-3">
+              <div className="flex items-center gap-2">
+                <div className="p-2 rounded-xl bg-indigo-500/20 text-indigo-400 border border-indigo-500/30">
+                  <UploadCloud className="w-5 h-5" />
+                </div>
+                <div>
+                  <h2 className="text-base font-bold text-white">Batch Upload Movies</h2>
+                  <p className="text-xs text-zinc-400">Select multiple video files to automatically create catalog entries</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  if (!batchMovieUploading) {
+                    setIsBatchMovieModalOpen(false);
+                    setBatchMovieFiles([]);
+                    setBatchMovieResults([]);
+                  }
+                }}
+                disabled={batchMovieUploading}
+                className="p-1.5 rounded-lg text-zinc-400 hover:text-white hover:bg-zinc-800 transition disabled:opacity-40"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* File selection drop area */}
+            <div className="space-y-3">
+              <input
+                type="file"
+                accept="video/*"
+                multiple
+                ref={batchMovieInputRef}
+                onChange={e => {
+                  if (e.target.files && e.target.files.length > 0) {
+                    setBatchMovieFiles(Array.from(e.target.files));
+                    setBatchMovieResults([]);
+                  }
+                }}
+                className="hidden"
+              />
+
+              <div
+                onClick={() => !batchMovieUploading && batchMovieInputRef.current?.click()}
+                className={`p-6 border-2 border-dashed rounded-2xl text-center cursor-pointer transition ${
+                  batchMovieFiles.length > 0 
+                    ? 'border-indigo-500/70 bg-indigo-950/20' 
+                    : 'border-zinc-700 hover:border-indigo-500 hover:bg-zinc-800/50'
+                }`}
+              >
+                <UploadCloud className="w-8 h-8 text-indigo-400 mx-auto mb-2" />
+                <p className="text-xs font-bold text-white">
+                  {batchMovieFiles.length > 0 
+                    ? `${batchMovieFiles.length} files selected` 
+                    : 'Click to select multiple movie video files'}
+                </p>
+                <p className="text-[11px] text-zinc-400 mt-1">
+                  Supports MP4, WebM, MKV, MOV. Titles will be automatically derived from file names.
+                </p>
+              </div>
+
+              {/* Selected file preview list */}
+              {batchMovieFiles.length > 0 && (
+                <div className="max-h-48 overflow-y-auto space-y-1.5 p-2 bg-zinc-950/60 rounded-xl border border-zinc-800 text-xs">
+                  {batchMovieFiles.map((file, idx) => (
+                    <div key={idx} className="flex items-center justify-between py-1 px-2 rounded-lg bg-zinc-900/60 text-zinc-300">
+                      <div className="flex items-center gap-2 truncate">
+                        <FileVideo className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+                        <span className="truncate">{cleanTitleFromFileName(file.name)}</span>
+                      </div>
+                      <span className="text-[10px] text-zinc-500 shrink-0 ml-2">
+                        {(file.size / (1024 * 1024)).toFixed(1)} MB
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Upload Progress Bar */}
+              {batchMovieUploading && (
+                <div className="p-3 bg-indigo-950/40 border border-indigo-800/60 rounded-xl space-y-1.5">
+                  <div className="flex justify-between text-xs text-indigo-300 font-medium">
+                    <span>Processing {batchMovieProgress.completed + 1} of {batchMovieProgress.total}: {batchMovieProgress.currentName}</span>
+                    <span>{Math.round((batchMovieProgress.completed / batchMovieProgress.total) * 100)}%</span>
+                  </div>
+                  <div className="w-full bg-zinc-900 rounded-full h-2.5 overflow-hidden">
+                    <div 
+                      className="bg-gradient-to-r from-indigo-500 to-purple-500 h-2.5 transition-all duration-300" 
+                      style={{ width: `${Math.round((batchMovieProgress.completed / batchMovieProgress.total) * 100)}%` }} 
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* Batch Upload Results */}
+              {batchMovieResults.length > 0 && (
+                <div className="space-y-1.5 max-h-36 overflow-y-auto p-2 bg-zinc-950/80 rounded-xl border border-zinc-800">
+                  <p className="text-[10px] uppercase font-bold text-zinc-400 px-1">Upload Results:</p>
+                  {batchMovieResults.map((r, i) => (
+                    <div key={i} className="flex items-center justify-between text-xs py-1 px-2 rounded-lg bg-zinc-900">
+                      <span className="truncate text-zinc-200">{r.title}</span>
+                      {r.success ? (
+                        <span className="text-emerald-400 flex items-center gap-1 text-[11px] font-medium">
+                          <CheckCircle2 className="w-3 h-3" /> Published {r.durationMinutes ? `(${formatDuration(r.durationMinutes)})` : ''}
+                        </span>
+                      ) : (
+                        <span className="text-rose-400 flex items-center gap-1 text-[11px] font-medium">
+                          <AlertTriangle className="w-3 h-3" /> {r.error}
+                        </span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Actions */}
+            <div className="flex items-center justify-end gap-3 pt-3 border-t border-zinc-800">
+              <button
+                type="button"
+                onClick={() => {
+                  setIsBatchMovieModalOpen(false);
+                  setBatchMovieFiles([]);
+                  setBatchMovieResults([]);
+                }}
+                disabled={batchMovieUploading}
+                className="px-4 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-semibold transition disabled:opacity-50"
+              >
+                {batchMovieResults.length > 0 ? 'Close' : 'Cancel'}
+              </button>
+
+              {batchMovieResults.length === 0 && (
+                <button
+                  type="button"
+                  disabled={batchMovieFiles.length === 0 || batchMovieUploading}
+                  onClick={() => handleBatchMovieUpload(batchMovieFiles)}
+                  className="px-5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold transition flex items-center gap-2 shadow-lg shadow-indigo-900/30 disabled:opacity-50"
+                >
+                  {batchMovieUploading ? (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      <span>Uploading Movies...</span>
+                    </>
+                  ) : (
+                    <>
+                      <UploadCloud className="w-3.5 h-3.5" />
+                      <span>Start Batch Upload ({batchMovieFiles.length})</span>
+                    </>
+                  )}
+                </button>
+              )}
             </div>
           </div>
         </div>

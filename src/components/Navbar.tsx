@@ -1,12 +1,13 @@
 import React, { useState } from 'react';
 import {
-  Search, Bell, Sparkles, Sun, Moon, Shield, User as UserIcon, LogOut, Check, Film, Tv, TrendingUp, Bookmark, Loader2, AlertCircle, X
+  Search, Bell, Sparkles, Sun, Moon, Shield, User as UserIcon, LogOut, Check, Film, Tv, TrendingUp, Bookmark, Loader2, AlertCircle, X, Globe
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { PiFlixLogo } from './PiFlixLogo';
 import { UserAvatar } from './UserAvatar';
 import { AppNotification } from '../types';
 import { formatNotificationTime } from '../lib/firebaseNotifications';
+import { useTranslation, SUPPORTED_LANGUAGES, LanguageCode } from '../lib/i18n';
 
 export const Navbar: React.FC = () => {
   const {
@@ -31,6 +32,8 @@ export const Navbar: React.FC = () => {
     piAuthError,
     clearPiAuthError
   } = useApp();
+
+  const { currentLang, changeLanguage, t, isRTL } = useTranslation();
 
   const [showNotifMenu, setShowNotifMenu] = useState(false);
   const [showProfileMenu, setShowProfileMenu] = useState(false);
@@ -78,9 +81,9 @@ export const Navbar: React.FC = () => {
     <header className={`sticky top-0 z-40 w-full backdrop-blur-md border-b transition-colors duration-200 ${
       isDark ? 'bg-[#0c0d14]/90 border-zinc-800/80 text-white' : 'bg-white/90 border-slate-200 text-slate-900 shadow-xs'
     }`}>
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-3 sm:gap-4">
+      <div className="max-w-7xl mx-auto px-4 sm:px-5 md:px-6 lg:px-8 h-16 flex items-center justify-between gap-2 sm:gap-3 md:gap-4">
         {/* Left: Brand Logo & Desktop Nav Links */}
-        <div className="flex items-center gap-3 md:gap-4 lg:gap-6 xl:gap-8 min-w-0 shrink">
+        <div className="flex items-center gap-2.5 sm:gap-3 md:gap-3 lg:gap-6 xl:gap-8 min-w-0 shrink">
           <div
             onClick={() => setActiveTab('home')}
             className="cursor-pointer transition hover:opacity-90 shrink-0"
@@ -89,20 +92,20 @@ export const Navbar: React.FC = () => {
           </div>
 
           {/* Desktop Navigation Links */}
-          <nav className="hidden md:flex items-center gap-1 lg:gap-1.5 text-xs font-semibold shrink-0">
+          <nav className="hidden md:flex items-center gap-0.5 md:gap-1 lg:gap-1.5 text-xs font-semibold shrink-0">
             {[
-              { id: 'home', label: 'Home' },
-              { id: 'movies', label: 'Movies' },
-              { id: 'series', label: 'TV Series' },
-              { id: 'trending', label: 'Trending' },
-              { id: 'watchlist', label: 'Watchlist' }
+              { id: 'home', label: t('home', 'Home') },
+              { id: 'movies', label: t('movies', 'Movies') },
+              { id: 'series', label: t('series', 'Series') },
+              { id: 'trending', label: t('trending', 'Trending') },
+              { id: 'watchlist', label: t('myList', 'My List') }
             ].map(item => {
               const isActive = activeTab === item.id;
               return (
                 <button
                   key={item.id}
                   onClick={() => setActiveTab(item.id as any)}
-                  className={`px-2.5 lg:px-3 py-1.5 rounded-lg whitespace-nowrap transition ${
+                  className={`px-2 md:px-2.5 lg:px-3 py-1.5 rounded-lg whitespace-nowrap transition ${
                     isActive
                       ? isDark
                         ? 'text-white bg-purple-600/30 border border-purple-500/40'
@@ -117,10 +120,29 @@ export const Navbar: React.FC = () => {
               );
             })}
 
+            {/* Tablet-only compact Search button positioned neatly between My List and VIP */}
+            <button
+              id="tablet-nav-search-btn"
+              onClick={() => setActiveTab('search')}
+              className={`hidden md:flex lg:hidden items-center justify-center px-2 md:px-2.5 py-1.5 rounded-lg whitespace-nowrap transition ${
+                activeTab === 'search'
+                  ? isDark
+                    ? 'text-white bg-purple-600/30 border border-purple-500/40'
+                    : 'text-purple-700 bg-purple-100 border border-purple-300'
+                  : isDark
+                  ? 'text-zinc-400 hover:text-white hover:bg-zinc-800/60'
+                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+              }`}
+              title={t('search', 'Search')}
+              aria-label={t('search', 'Search')}
+            >
+              <Search className="w-4 h-4" />
+            </button>
+
             {/* Premium VIP Link */}
             <button
               onClick={() => setActiveTab('premium')}
-              className={`px-2.5 lg:px-3 py-1.5 rounded-lg font-bold whitespace-nowrap transition flex items-center gap-1.5 ${
+              className={`px-2 md:px-2.5 lg:px-3 py-1.5 rounded-lg font-bold whitespace-nowrap transition flex items-center gap-1.5 ${
                 activeTab === 'premium'
                   ? 'bg-gradient-to-r from-amber-500 to-rose-500 text-black shadow'
                   : isDark
@@ -135,15 +157,15 @@ export const Navbar: React.FC = () => {
         </div>
 
         {/* Right Controls: Search, Notifications, Theme, Profile */}
-        <div className="flex items-center gap-1.5 sm:gap-2 lg:gap-3 shrink-0">
-          {/* Quick Search Input */}
-          <div className="relative hidden md:block w-36 lg:w-52 xl:w-60">
+        <div className="flex items-center gap-1 sm:gap-1.5 md:gap-2 lg:gap-3 shrink-0">
+          {/* Quick Search Input (Desktop view only - hidden on mobile and tablet) */}
+          <div className="relative hidden lg:block w-48 xl:w-60">
             <Search className={`w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none ${
               isDark ? 'text-zinc-400' : 'text-slate-400'
             }`} />
             <input
               type="text"
-              placeholder="Search movies, cast..."
+              placeholder={t('search_placeholder')}
               value={searchQuery}
               onChange={e => {
                 setSearchQuery(e.target.value);
@@ -205,7 +227,10 @@ export const Navbar: React.FC = () => {
             {showNotifMenu && (
               <div
                 id="notification-dropdown-panel"
-                className={`fixed sm:absolute top-16 sm:top-12 left-3 right-3 sm:left-auto sm:right-0 sm:w-88 max-w-[calc(100vw-1.5rem)] sm:max-w-sm backdrop-blur-xl rounded-2xl shadow-2xl p-3.5 z-50 text-xs space-y-2.5 border transition-all ${
+                dir={isRTL ? 'rtl' : 'ltr'}
+                className={`fixed sm:absolute top-16 sm:top-12 ${
+                  isRTL ? 'left-3 sm:left-0 sm:right-auto' : 'right-3 sm:right-0 sm:left-auto'
+                } sm:w-88 max-w-[calc(100vw-1.5rem)] sm:max-w-sm backdrop-blur-xl rounded-2xl shadow-2xl p-3.5 z-50 text-xs space-y-2.5 border transition-all ${
                   isDark
                     ? 'bg-zinc-900/95 border-zinc-800 text-white shadow-black/80'
                     : 'bg-white/95 border-slate-200 text-slate-900 shadow-xl'
@@ -342,7 +367,7 @@ export const Navbar: React.FC = () => {
               <button
                 onClick={() => signInWithPi(false)}
                 disabled={isPiAuthenticating}
-                className="flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-full text-xs font-bold bg-gradient-to-r from-amber-500 to-purple-600 hover:from-amber-400 hover:to-purple-500 text-white shadow-xs transition transform active:scale-95 disabled:opacity-60 cursor-pointer shrink-0"
+                className="flex items-center gap-1.5 px-2.5 sm:px-2.5 lg:px-3 py-1.5 rounded-full text-xs font-bold bg-gradient-to-r from-amber-500 to-purple-600 hover:from-amber-400 hover:to-purple-500 text-white shadow-xs transition transform active:scale-95 disabled:opacity-60 cursor-pointer shrink-0"
                 title="Sign in with your Pi Network account"
               >
                 {isPiAuthenticating ? (
@@ -350,20 +375,21 @@ export const Navbar: React.FC = () => {
                 ) : (
                   <span className="font-serif font-black text-amber-200 text-sm leading-none">π</span>
                 )}
-                <span className="hidden sm:inline">{isPiAuthenticating ? 'Connecting...' : 'Sign in with Pi'}</span>
+                <span className="hidden lg:inline">{isPiAuthenticating ? 'Connecting...' : 'Sign in with Pi'}</span>
               </button>
             )}
 
             {/* Dismissible Error / Notice Popup when manual attempt fails */}
             {piAuthError && (
               <div
-                className={`absolute right-0 top-11 w-72 p-3 rounded-xl shadow-2xl border text-xs z-50 animate-in fade-in slide-in-from-top-2 ${
+                dir={isRTL ? 'rtl' : 'ltr'}
+                className={`absolute ${isRTL ? 'left-0 right-auto' : 'right-0 left-auto'} top-11 w-72 max-w-[calc(100vw-1.5rem)] p-3 rounded-xl shadow-2xl border text-xs z-50 animate-in fade-in slide-in-from-top-2 ${
                   isDark ? 'bg-zinc-900 border-amber-500/40 text-zinc-200' : 'bg-white border-amber-400 text-slate-800'
                 }`}
               >
                 <div className="flex items-start gap-2">
                   <AlertCircle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
-                  <div className="flex-1 space-y-1">
+                  <div className="flex-1 space-y-1 text-start">
                     <p className="font-semibold text-amber-400">Pi Network Notice</p>
                     <p className="text-[11px] leading-relaxed opacity-90">{piAuthError}</p>
                   </div>
@@ -396,9 +422,13 @@ export const Navbar: React.FC = () => {
 
             {/* Profile Dropdown */}
             {showProfileMenu && (
-              <div className={`absolute right-0 top-12 w-64 rounded-2xl shadow-2xl p-4 z-50 text-xs space-y-3 border ${
-                isDark ? 'bg-zinc-900 border-zinc-800 text-white' : 'bg-white border-slate-200 text-slate-900 shadow-xl'
-              }`}>
+              <div
+                id="user-profile-dropdown"
+                dir={isRTL ? 'rtl' : 'ltr'}
+                className={`absolute ${isRTL ? 'left-0 right-auto' : 'right-0 left-auto'} top-12 w-64 max-w-[calc(100vw-1.5rem)] rounded-2xl shadow-2xl p-4 z-50 text-xs space-y-3 border transition-all ${
+                  isDark ? 'bg-zinc-900 border-zinc-800 text-white' : 'bg-white border-slate-200 text-slate-900 shadow-xl'
+                }`}
+              >
                 <div className={`flex items-center gap-3 pb-3 border-b ${isDark ? 'border-zinc-800' : 'border-slate-200'}`}>
                   <UserAvatar
                     user={currentUser}
@@ -406,7 +436,7 @@ export const Navbar: React.FC = () => {
                     textClass="text-2xl"
                     isDark={isDark}
                   />
-                  <div className="truncate">
+                  <div className="truncate text-start flex-1 min-w-0">
                     <div className="font-bold truncate flex items-center gap-1.5">
                       <span>{currentUser.username}</span>
                       {currentUser.piUsername && (
@@ -432,7 +462,7 @@ export const Navbar: React.FC = () => {
                       setShowProfileMenu(false);
                     }}
                     disabled={isPiAuthenticating}
-                    className={`w-full text-left px-3 py-2 rounded-lg transition flex items-center gap-2 font-semibold ${
+                    className={`w-full text-start px-3 py-2 rounded-lg transition flex items-center gap-2 font-semibold ${
                       isDark ? 'hover:bg-purple-900/30 text-purple-300' : 'hover:bg-purple-50 text-purple-700'
                     }`}
                   >
@@ -449,12 +479,12 @@ export const Navbar: React.FC = () => {
                       setActiveTab('watchlist');
                       setShowProfileMenu(false);
                     }}
-                    className={`w-full text-left px-3 py-2 rounded-lg transition flex items-center gap-2 ${
+                    className={`w-full text-start px-3 py-2 rounded-lg transition flex items-center gap-2 ${
                       isDark ? 'hover:bg-zinc-800 text-zinc-300 hover:text-white' : 'hover:bg-slate-100 text-slate-700 hover:text-slate-900'
                     }`}
                   >
                     <Bookmark className="w-4 h-4 text-purple-500" />
-                    <span>My Watchlist & History</span>
+                    <span>{t('myList', 'My List')}</span>
                   </button>
 
                   <button
@@ -462,12 +492,12 @@ export const Navbar: React.FC = () => {
                       openPiPayment('monthly');
                       setShowProfileMenu(false);
                     }}
-                    className={`w-full text-left px-3 py-2 rounded-lg transition flex items-center gap-2 font-semibold ${
+                    className={`w-full text-start px-3 py-2 rounded-lg transition flex items-center gap-2 font-semibold ${
                       isDark ? 'hover:bg-zinc-800 text-amber-400 hover:text-amber-300' : 'hover:bg-amber-50 text-amber-600 hover:text-amber-700'
                     }`}
                   >
                     <Sparkles className="w-4 h-4" />
-                    <span>Upgrade with Pi</span>
+                    <span>{t('upgradeWithPi', 'Upgrade with Pi')}</span>
                   </button>
 
                   <button
@@ -475,13 +505,47 @@ export const Navbar: React.FC = () => {
                       setActiveTab('admin');
                       setShowProfileMenu(false);
                     }}
-                    className={`w-full text-left px-3 py-2 rounded-lg transition flex items-center gap-2 ${
+                    className={`w-full text-start px-3 py-2 rounded-lg transition flex items-center gap-2 ${
                       isDark ? 'hover:bg-zinc-800 text-zinc-300 hover:text-white' : 'hover:bg-slate-100 text-slate-700 hover:text-slate-900'
                     }`}
                   >
                     <Shield className="w-4 h-4 text-sky-500" />
-                    <span>Admin CMS</span>
+                    <span>{t('admin', 'Admin CMS')}</span>
                   </button>
+
+                  {/* Language Settings Selection (Task 3) */}
+                  <div className={`pt-2.5 pb-1 border-t ${isDark ? 'border-zinc-800/80' : 'border-slate-200'} space-y-1.5`}>
+                    <div className="flex items-center justify-between text-[11px] px-1 text-zinc-400">
+                      <span className="flex items-center gap-1.5 font-semibold text-zinc-300">
+                        <Globe className="w-3.5 h-3.5 text-purple-400" />
+                        <span>{t('language')}</span>
+                      </span>
+                      <span className="text-[10px] text-purple-400 font-mono font-bold">
+                        {SUPPORTED_LANGUAGES.find(l => l.code === currentLang)?.nativeName || 'English'}
+                      </span>
+                    </div>
+
+                    <select
+                      id="language-select"
+                      value={currentLang}
+                      onChange={(e) => changeLanguage(e.target.value as LanguageCode)}
+                      className={`w-full px-2.5 py-1.5 rounded-lg text-xs font-medium border transition cursor-pointer ${
+                        isDark
+                          ? 'bg-zinc-950 border-zinc-700 text-zinc-200 hover:border-purple-500/60 focus:border-purple-500 focus:outline-none'
+                          : 'bg-slate-50 border-slate-300 text-slate-800 hover:border-purple-400 focus:border-purple-500 focus:outline-none'
+                      }`}
+                    >
+                      {SUPPORTED_LANGUAGES.map((lang) => (
+                        <option
+                          key={lang.code}
+                          value={lang.code}
+                          className={isDark ? 'bg-zinc-900 text-white' : 'bg-white text-black'}
+                        >
+                          {lang.nativeName} ({lang.name})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
 
                 <div className={`pt-2 border-t ${isDark ? 'border-zinc-800' : 'border-slate-200'}`}>
@@ -490,10 +554,10 @@ export const Navbar: React.FC = () => {
                       logout();
                       setShowProfileMenu(false);
                     }}
-                    className="w-full text-left px-3 py-2 rounded-lg hover:bg-rose-100/60 text-rose-500 transition flex items-center gap-2"
+                    className="w-full text-start px-3 py-2 rounded-lg hover:bg-rose-100/60 text-rose-500 transition flex items-center gap-2"
                   >
                     <LogOut className="w-4 h-4" />
-                    <span>Switch / Log out</span>
+                    <span>{t('logout')}</span>
                   </button>
                 </div>
               </div>

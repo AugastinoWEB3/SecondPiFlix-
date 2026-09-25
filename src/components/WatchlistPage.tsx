@@ -32,7 +32,7 @@ export const WatchlistPage: React.FC = () => {
     .slice(0, 6);
 
   return (
-    <div className={`max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-10 animate-fade-in min-h-[70vh] ${
+    <div className={`max-w-7xl mx-auto px-4 sm:px-5 md:px-6 lg:px-8 py-6 sm:py-8 space-y-8 sm:space-y-10 animate-fade-in min-h-[70vh] ${
       isDark ? 'text-white' : 'text-slate-900'
     }`}>
       {/* Page Header */}
@@ -41,7 +41,7 @@ export const WatchlistPage: React.FC = () => {
           isDark ? 'text-white' : 'text-slate-900'
         }`}>
           <Bookmark className="w-6 h-6 text-purple-500" />
-          <span>My Library & Watchlist</span>
+          <span>My List</span>
         </h1>
         <p className={`text-xs mt-1 ${isDark ? 'text-zinc-400' : 'text-slate-500'}`}>
           Pick up right where you left off and access your saved streaming titles.
@@ -56,7 +56,7 @@ export const WatchlistPage: React.FC = () => {
             <span>Continue Watching</span>
           </h2>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {continueWatchingItems.map(item => {
               const content = item.content || movies.find(m => m.id === item.contentId) || seriesList.find(s => s.id === item.contentId);
               if (!content) return null;
@@ -121,12 +121,12 @@ export const WatchlistPage: React.FC = () => {
         </div>
       )}
 
-      {/* SECTION 2: MY WATCHLIST */}
+      {/* SECTION 2: MY LIST */}
       <div className="space-y-4">
         <div className="flex items-center justify-between">
           <h2 className={`text-base font-bold flex items-center gap-2 ${isDark ? 'text-zinc-200' : 'text-slate-800'}`}>
             <Film className="w-4 h-4 text-pink-500" />
-            <span>Saved in Watchlist ({watchlistItems.length})</span>
+            <span>Saved in My List ({watchlistItems.length})</span>
           </h2>
         </div>
 
@@ -140,9 +140,9 @@ export const WatchlistPage: React.FC = () => {
               <Bookmark className="w-6 h-6" />
             </div>
             <div>
-              <h3 className={`text-base font-bold ${isDark ? 'text-white' : 'text-slate-900'}`}>Your watchlist is empty</h3>
+              <h3 className={`text-base font-bold ${isDark ? 'text-white' : 'text-slate-900'}`}>Your list is empty</h3>
               <p className={`text-xs mt-1 max-w-sm mx-auto ${isDark ? 'text-zinc-500' : 'text-slate-500'}`}>
-                Explore movies and series on PiFlix+ and click the &ldquo;+ Watchlist&rdquo; button to save titles for later.
+                Explore movies and series on PiFlix+ and click the &ldquo;+ My List&rdquo; button to save titles for later.
               </p>
             </div>
             <button
@@ -163,7 +163,7 @@ export const WatchlistPage: React.FC = () => {
                     toggleWatchlist(item.id, 'seasonsCount' in item ? 'series' : 'movie');
                   }}
                   className="absolute top-2 right-2 z-20 p-1.5 rounded-md bg-black/80 hover:bg-rose-950 text-zinc-400 hover:text-rose-400 border border-white/10 opacity-0 group-hover/wcard:opacity-100 transition"
-                  title="Remove from Watchlist"
+                  title="Remove from My List"
                 >
                   <Trash2 className="w-3.5 h-3.5" />
                 </button>

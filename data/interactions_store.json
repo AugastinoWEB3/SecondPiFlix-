@@ -1,0 +1,91 @@
+{
+  "likedItems": [
+    {
+      "id": "lk-1",
+      "userId": "usr_demo",
+      "contentId": "m-serengeti-whispers",
+      "contentType": "movie",
+      "likedAt": "2026-09-19T19:31:58.968Z"
+    },
+    {
+      "id": "lk-1789846325510-qkwyr",
+      "userId": "usr_demo",
+      "contentId": "m-lagos-shadows",
+      "contentType": "movie",
+      "likedAt": "2026-09-19T19:32:05.510Z"
+    }
+  ],
+  "reviews": [
+    {
+      "id": "rev-1789846325527-yrtpq",
+      "userId": "usr_test",
+      "username": "Pioneer_Tester",
+      "contentId": "m-lagos-shadows",
+      "rating": 10,
+      "review": "Outstanding cinema experience!",
+      "createdAt": "2026-09-19T19:32:05.526Z",
+      "approved": true
+    },
+    {
+      "id": "rev-1",
+      "userId": "usr_demo",
+      "username": "PiPioneer_Alex",
+      "userImage": "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&auto=format&fit=crop&q=80",
+      "contentId": "m-tears-of-steel",
+      "rating": 9,
+      "review": "Phenomenal sci-fi VFX and futuristic atmosphere! Streamed smoothly without lag on PiFlix+.",
+      "createdAt": "2026-09-19T07:31:58.968Z",
+      "approved": true
+    },
+    {
+      "id": "rev-2",
+      "userId": "usr_admin",
+      "username": "piflix_admin",
+      "userImage": "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80",
+      "contentId": "m-lagos-shadows",
+      "rating": 10,
+      "review": "Nollywood masterpiece! Top tier storytelling and sound design.",
+      "createdAt": "2026-09-19T16:11:58.968Z",
+      "approved": true
+    }
+  ],
+  "watchlist": [
+    {
+      "id": "wl-1",
+      "userId": "usr_demo",
+      "contentId": "m-lagos-shadows",
+      "contentType": "movie",
+      "addedAt": "2026-09-19T19:31:58.968Z"
+    },
+    {
+      "id": "wl-2",
+      "userId": "usr_demo",
+      "contentId": "s-nairobi-dynasty",
+      "contentType": "series",
+      "addedAt": "2026-09-19T19:31:58.968Z"
+    }
+  ],
+  "watchHistory": [
+    {
+      "id": "wh-1",
+      "userId": "usr_demo",
+      "contentId": "m-tears-of-steel",
+      "contentType": "movie",
+      "progressSeconds": 180,
+      "durationSeconds": 720,
+      "completionPercentage": 25,
+      "lastWatched": "2026-09-19T18:31:58.968Z"
+    },
+    {
+      "id": "wh-2",
+      "userId": "usr_demo",
+      "contentId": "s-pi-syndicate",
+      "contentType": "series",
+      "episodeId": "ep-pi-101",
+      "progressSeconds": 950,
+      "durationSeconds": 2880,
+      "completionPercentage": 33,
+      "lastWatched": "2026-09-18T19:31:58.968Z"
+    }
+  ]
+}

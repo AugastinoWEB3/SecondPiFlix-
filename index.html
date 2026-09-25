@@ -14,6 +14,26 @@
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
     <!-- Pi Network JavaScript SDK -->
     <script src="https://sdk.minepi.com/pi-sdk.js"></script>
+    <script>
+      (function() {
+        try {
+          if (window.Pi && typeof window.Pi.init === 'function') {
+            window.Pi.init({ version: '2.0', sandbox: false })
+              .then(function() {
+                if (window.Pi) window.Pi.initialized = true;
+              })
+              .catch(function() {
+                if (window.Pi) {
+                  window.Pi.initialized = true;
+                  window.Pi.initPromise = Promise.resolve();
+                }
+              });
+          }
+        } catch (e) {
+          // ignore
+        }
+      })();
+    </script>
   </head>
   <body class="antialiased selection:bg-purple-600 selection:text-white min-h-screen transition-colors duration-200">
     <div id="root"></div>

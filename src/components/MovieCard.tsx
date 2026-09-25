@@ -2,6 +2,7 @@ import React from 'react';
 import { Play, Plus, Check, Heart, Star, Sparkles } from 'lucide-react';
 import { Movie, TVSeries } from '../types';
 import { useApp } from '../context/AppContext';
+import { formatDuration } from '../lib/formatters';
 
 interface MovieCardProps {
   content: Movie | TVSeries;
@@ -69,10 +70,14 @@ export const MovieCard: React.FC<MovieCardProps> = ({ content, aspectRatio = 'po
           <button
             onClick={(e) => {
               e.stopPropagation();
-              playVideo(content);
+              if (isSeries) {
+                openDetails(content, 'series');
+              } else {
+                playVideo(content);
+              }
             }}
             className="w-11 h-11 rounded-full bg-gradient-to-tr from-purple-600 to-pink-600 text-white flex items-center justify-center shadow-lg hover:scale-110 active:scale-95 transition"
-            title="Play Now"
+            title={isSeries ? 'View Seasons & Episodes' : 'Play Now'}
           >
             <Play className="w-5 h-5 fill-current ml-0.5" />
           </button>
@@ -83,7 +88,7 @@ export const MovieCard: React.FC<MovieCardProps> = ({ content, aspectRatio = 'po
               toggleWatchlist(content.id, isSeries ? 'series' : 'movie');
             }}
             className="w-9 h-9 rounded-full bg-zinc-800/90 hover:bg-zinc-700 text-white flex items-center justify-center shadow transition hover:scale-105"
-            title={inList ? 'Remove from Watchlist' : 'Add to Watchlist'}
+            title={inList ? 'Remove from My List' : 'Add to My List'}
           >
             {inList ? <Check className="w-4 h-4 text-emerald-400" /> : <Plus className="w-4 h-4" />}
           </button>
@@ -113,8 +118,12 @@ export const MovieCard: React.FC<MovieCardProps> = ({ content, aspectRatio = 'po
           isDark ? 'text-zinc-400' : 'text-slate-500'
         }`}>
           <span>{content.year}</span>
-          <span className="truncate max-w-[100px] font-medium">{primaryGenre}</span>
-          <span>{content.language}</span>
+          <span className="truncate max-w-[85px] font-medium">{primaryGenre}</span>
+          {isSeries ? (
+            <span>{(content as TVSeries).seasonsCount ? `${(content as TVSeries).seasonsCount} Season${(content as TVSeries).seasonsCount > 1 ? 's' : ''}` : 'Series'}</span>
+          ) : (
+            <span>{(content as Movie).duration ? formatDuration((content as Movie).duration) : content.language}</span>
+          )}
         </div>
       </div>
     </div>

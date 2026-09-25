@@ -13,6 +13,8 @@ export interface User {
   subscriptionExpiry?: string;
   piUsername?: string;
   piWalletAddress?: string;
+  isPiUser?: boolean;
+  piUserId?: string;
   createdAt: string;
   notificationSettings: {
     newMovies: boolean;
@@ -84,6 +86,7 @@ export interface TVSeries {
   seasonsCount: number;
   createdAt: string;
   updatedAt: string;
+  seasons?: Season[];
   episodes?: Episode[];
 }
 
@@ -96,6 +99,7 @@ export interface ContentItem {
   videoUrl: string;
   trailerUrl?: string;
   year: number;
+  duration?: number;
   genre: string;
   language: string;
   rating: number;
@@ -104,8 +108,14 @@ export interface ContentItem {
   published: boolean;
   createdAt: string;
   updatedAt: string;
+  seasonsCount?: number;
+  seasons?: Season[];
   episodes?: {
     id: string;
+    seriesId?: string;
+    seasonId?: string;
+    seasonNumber?: number;
+    seasonName?: string;
     episodeNumber: number;
     title: string;
     description?: string;
@@ -118,9 +128,10 @@ export interface ContentItem {
 
 export interface Season {
   id: string;
-  seriesId: string;
+  seriesId?: string;
   seasonNumber: number;
-  title: string;
+  seasonName?: string;
+  title?: string;
   episodesCount?: number;
 }
 
@@ -128,6 +139,8 @@ export interface Episode {
   id: string;
   seriesId: string;
   seasonId: string;
+  seasonNumber?: number;
+  seasonName?: string;
   episodeNumber: number;
   title: string;
   description: string;
@@ -275,3 +288,49 @@ export interface PlatformOverviewStats {
   piRevenue: number;
   adViews: number;
 }
+
+export type VisitorTrafficSource = 'pi_browser' | 'external_web';
+
+export interface VisitorRecord {
+  visitorId: string;
+  source: VisitorTrafficSource;
+  piUserId?: string;
+  piUsername?: string;
+  firstSeen: string;
+  lastSeen: string;
+  visitDates: string[];
+  visitCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface VisitorAnalyticsMetrics {
+  today: number;
+  thisWeek: number;
+  thisMonth: number;
+  thisYear: number;
+  totalVisitors: number;
+}
+
+export interface VisitorTrafficSources {
+  piBrowser: number;
+  externalWeb: number;
+}
+
+export interface RecentVisitorItem {
+  visitorId: string;
+  source: VisitorTrafficSource;
+  piUsername?: string;
+  firstSeen: string;
+  lastSeen: string;
+  visitCount: number;
+}
+
+export interface VisitorAnalyticsData {
+  metrics: VisitorAnalyticsMetrics;
+  trafficSources: VisitorTrafficSources;
+  recentVisitors: RecentVisitorItem[];
+  hourlyToday: Record<number, number>;
+  serverTime: string;
+}
+

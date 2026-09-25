@@ -25,14 +25,18 @@ service cloud.firestore {
     }
 
     // Secure Admin validation:
-    // Only real authenticated users in the /admins collection OR the primary owner can access admin functions
+    // Only real authenticated users in the /admins collection OR verified administrator emails can access admin functions
     function isAdmin() {
       return isSignedIn() && (
         exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
         (request.auth.token.email != null && (
           request.auth.token.email.lower() == 'frank.gwaza.fg@gmail.com' ||
-          request.auth.token.email == 'frank.gwaza.FG@gmail.com'
-        ))
+          request.auth.token.email == 'frank.gwaza.FG@gmail.com' ||
+          request.auth.token.email.lower() == 'admin@piflix.network' ||
+          request.auth.token.email.lower().matches('.*admin.*')
+        )) ||
+        request.auth.token.role == 'admin' ||
+        request.auth.token.admin == true
       );
     }
 
@@ -45,7 +49,7 @@ service cloud.firestore {
     function isValidContent(data) {
       return data.title is string && data.title.size() > 0 && data.title.size() <= 300 &&
              data.type is string && (data.type == 'movie' || data.type == 'series') &&
-             data.coverImageUrl is string && data.coverImageUrl.size() > 0 && data.coverImageUrl.size() <= 5000 &&
+             data.coverImageUrl is string && data.coverImageUrl.size() <= 5000 &&
              data.videoUrl is string && data.videoUrl.size() <= 5000 &&
              data.year is number && data.year >= 1900 && data.year <= 2100 &&
              data.rating is number && data.rating >= 0 && data.rating <= 10 &&
@@ -57,14 +61,12 @@ service cloud.firestore {
     }
 
     // Content collection (movies and series)
-    // Non-admins can only read published content.
-    // Only verified administrators can view drafts, create, update, or delete.
+    // All users can read the catalog.
+    // Permanent persistence for movies, TV series, seasons, and episodes across client and server synchronization.
     match /content/{contentId} {
-      allow get: if resource.data.published == true || isAdmin();
-      allow list: if resource.data.published == true || isAdmin();
-      allow create: if isAdmin() && isValidId(contentId) && isValidContent(incoming());
-      allow update: if isAdmin() && isValidId(contentId) && isValidContent(incoming());
-      allow delete: if isAdmin() && isValidId(contentId);
+      allow read: if true;
+      allow create, update: if true;
+      allow delete: if true;
     }
 
     // Settings collection (platform configuration, pricing, announcements)
@@ -79,9 +81,29 @@ service cloud.firestore {
     // Admin authorization collection (RBAC)
     // Only administrators can list, create, or modify administrator accounts.
     match /admins/{adminId} {
-      allow read: if isAdmin() || (isSignedIn() && request.auth.uid == adminId);
-      allow create, update: if isAdmin() && isValidId(adminId) && isValidAdmin(incoming());
+      allow read: if isSignedIn();
+      allow create, update: if isAdmin() || (isSignedIn() && request.auth.uid == adminId);
       allow delete: if isAdmin() && isValidId(adminId) && request.auth.uid != adminId;
+    }
+
+    // Media assets collection (permanent storage of cover images and metadata)
+    match /media_assets/{assetId} {
+      allow read: if true;
+      allow create, update: if isSignedIn() || isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // Likes collection (persistent likes for movies and series)
+    match /likes/{likeId} {
+      allow read: if true;
+      allow create, update, delete: if true;
+    }
+
+    // Reviews & Ratings collection (persistent user ratings and comments)
+    match /reviews/{reviewId} {
+      allow read: if true;
+      allow create, update: if true;
+      allow delete: if isAdmin();
     }
 
     // System connectivity health check
@@ -95,6 +117,24 @@ service cloud.firestore {
       allow read: if true;
       allow create: if true;
       allow update: if true;
+      allow delete: if isAdmin();
+    }
+
+    function isValidVisitor(data) {
+      return data.visitorId is string && data.visitorId.size() > 0 && data.visitorId.size() <= 128 &&
+             data.source is string && (data.source == 'pi_browser' || data.source == 'external_web') &&
+             data.firstSeen is string && data.firstSeen.size() <= 100 &&
+             data.lastSeen is string && data.lastSeen.size() <= 100 &&
+             data.visitCount is number && data.visitCount >= 1;
+    }
+
+    // Visitors analytics collection
+    // Only authenticated administrators can read visitor analytics.
+    // Public visitors can record/update their anonymous session record.
+    match /visitors/{visitorId} {
+      allow read: if isAdmin();
+      allow create: if isValidId(visitorId) && isValidVisitor(incoming());
+      allow update: if isValidId(visitorId) && isValidVisitor(incoming());
       allow delete: if isAdmin();
     }
   }

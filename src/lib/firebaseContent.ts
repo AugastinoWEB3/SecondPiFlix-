@@ -16,6 +16,8 @@ import { AppSettings } from '../types';
 
 export interface EpisodeItem {
   id: string;
+  seasonNumber?: number;
+  seasonId?: string;
   episodeNumber: number;
   title: string;
   description?: string;
@@ -23,6 +25,15 @@ export interface EpisodeItem {
   videoUrl: string;
   duration?: number;
   skipIntroSec?: number;
+}
+
+export interface SeasonItem {
+  id: string;
+  seriesId?: string;
+  seasonNumber: number;
+  seasonName?: string;
+  title?: string;
+  episodesCount?: number;
 }
 
 export interface ContentItem {
@@ -34,14 +45,22 @@ export interface ContentItem {
   videoUrl: string;
   trailerUrl?: string;
   year: number;
+  duration?: number;
   genre: string;
   language: string;
+  country?: string;
+  director?: string;
+  cast?: string[];
   rating: number;
   quality: 'HD' | 'FHD' | '4K';
   accessType: 'free' | 'premium';
   published: boolean;
+  isFeatured?: boolean;
+  isTrending?: boolean;
   createdAt: string;
   updatedAt: string;
+  seasonsCount?: number;
+  seasons?: SeasonItem[];
   episodes?: EpisodeItem[];
 }
 
@@ -70,7 +89,7 @@ async function getAuthHeaders(): Promise<Record<string, string>> {
  * Save new or existing content item to Firestore.
  * Also synchronizes with server-side catalog.
  */
-export async function saveContent(item: ContentItem): Promise<ContentItem> {
+export async function saveContent(item: ContentItem, isEditing = false): Promise<ContentItem> {
   const contentDoc = doc(db, CONTENT_COLLECTION, item.id);
   const now = new Date().toISOString();
   const payload: ContentItem = {
@@ -84,14 +103,32 @@ export async function saveContent(item: ContentItem): Promise<ContentItem> {
     year: Number(item.year) || new Date().getFullYear(),
     genre: Array.isArray(item.genre) ? (item.genre as string[]).join(', ') : String(item.genre || 'General'),
     language: String(item.language || 'English'),
+    country: item.country || 'International',
+    director: item.director || 'Creator',
+    cast: Array.isArray(item.cast) ? item.cast : [],
     rating: Number(item.rating) || 8.0,
     quality: (item.quality as 'HD' | 'FHD' | '4K') || 'HD',
     accessType: item.accessType === 'premium' ? 'premium' : 'free',
     published: Boolean(item.published !== false),
+    isFeatured: Boolean(item.isFeatured),
+    isTrending: Boolean(item.isTrending !== undefined ? item.isTrending : true),
     createdAt: item.createdAt || now,
     updatedAt: now,
+    duration: item.duration !== undefined && item.duration !== null ? Number(item.duration) : (item.type === 'movie' ? 90 : undefined),
+    seasonsCount: item.type === 'series'
+      ? (item.seasons?.length || item.seasonsCount || 1)
+      : undefined,
+    seasons: Array.isArray(item.seasons) ? item.seasons.map((sn, idx) => ({
+      id: sn.id || `sn-${item.id}-${sn.seasonNumber || idx + 1}`,
+      seasonNumber: Number(sn.seasonNumber) || (idx + 1),
+      seasonName: String(sn.seasonName || sn.title || `Season ${sn.seasonNumber || idx + 1}`),
+      title: String(sn.title || sn.seasonName || `Season ${sn.seasonNumber || idx + 1}`),
+      episodesCount: Number(sn.episodesCount) || 0
+    })) : undefined,
     episodes: Array.isArray(item.episodes) ? item.episodes.map((ep, idx) => ({
       id: ep.id || `ep-${item.id}-${idx + 1}`,
+      seasonNumber: Number(ep.seasonNumber) || 1,
+      seasonId: ep.seasonId || undefined,
       episodeNumber: Number(ep.episodeNumber) || (idx + 1),
       title: String(ep.title || `Episode ${idx + 1}`),
       description: String(ep.description || ''),
@@ -103,22 +140,44 @@ export async function saveContent(item: ContentItem): Promise<ContentItem> {
   };
 
   try {
-    await setDoc(contentDoc, payload);
+    await setDoc(contentDoc, payload, { merge: true });
   } catch (err) {
     console.warn('Firestore setDoc failed or restricted, syncing via server API:', err);
   }
 
-  // Also sync to server API for caching and streaming integration
+  // Also sync to server API for caching and persistence
   try {
     const authHeaders = await getAuthHeaders();
-    await fetch('/api/content', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...authHeaders
-      },
-      body: JSON.stringify(payload)
-    });
+    if (isEditing) {
+      const putRes = await fetch(`/api/content/${item.id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          ...authHeaders
+        },
+        body: JSON.stringify(payload)
+      });
+      if (!putRes.ok && putRes.status === 404) {
+        // If not found for PUT, create it via POST
+        await fetch('/api/content', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...authHeaders
+          },
+          body: JSON.stringify(payload)
+        });
+      }
+    } else {
+      await fetch('/api/content', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...authHeaders
+        },
+        body: JSON.stringify(payload)
+      });
+    }
   } catch (err) {
     console.warn('Server content sync error:', err);
   }
@@ -343,8 +402,8 @@ export async function cleanExistingInvalidMedia(): Promise<{ checked: number; up
         updates.coverImageUrl = fallbackCover;
       }
 
-      // Check videoUrl - only fix if empty or missing
-      if (!data.videoUrl || typeof data.videoUrl !== 'string' || data.videoUrl.trim() === '') {
+      // Check videoUrl - only fix if empty or missing for movies
+      if (data.type === 'movie' && (!data.videoUrl || typeof data.videoUrl !== 'string' || data.videoUrl.trim() === '')) {
         updates.videoUrl = fallbackVideo;
       }
 
