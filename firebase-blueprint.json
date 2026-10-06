@@ -101,9 +101,57 @@
         "updatedAt": { "type": "string", "maxLength": 100 }
       },
       "required": ["visitorId", "source", "firstSeen", "lastSeen", "visitCount"]
+    },
+    "subscriptions": {
+      "title": "SubscriptionRecord",
+      "description": "User VIP subscription record with payment transaction and expiration tracking",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "piUsername": { "type": "string", "maxLength": 128 },
+        "piUserId": { "type": "string", "maxLength": 128 },
+        "plan": { "type": "string", "enum": ["monthly", "annual"] },
+        "pricePi": { "type": "number" },
+        "transactionId": { "type": "string", "maxLength": 128 },
+        "paymentId": { "type": "string", "maxLength": 128 },
+        "paymentStatus": { "type": "string", "enum": ["completed", "pending", "failed"] },
+        "status": { "type": "string", "enum": ["active", "expired", "cancelled", "pending"] },
+        "subscriptionStatus": { "type": "string", "enum": ["active", "expired", "cancelled", "pending"] },
+        "durationPurchased": { "type": "string", "enum": ["monthly", "yearly"] },
+        "purchaseDate": { "type": "string", "maxLength": 100 },
+        "startDate": { "type": "string", "maxLength": 100 },
+        "startAt": { "type": "string", "maxLength": 100 },
+        "expiryDate": { "type": "string", "maxLength": 100 },
+        "expiresAt": { "type": "string", "maxLength": 100 },
+        "updatedAt": { "type": "string", "maxLength": 100 }
+      },
+      "required": ["userId", "plan", "transactionId", "startDate", "expiryDate", "status"]
+    },
+    "releases": {
+      "title": "PublishedRelease",
+      "description": "Authoritative published snapshot release for synchronized media catalog across public web and Pi Browser",
+      "type": "object",
+      "properties": {
+        "releaseId": { "type": "string", "maxLength": 128 },
+        "revision": { "type": "number" },
+        "publishedAt": { "type": "string", "maxLength": 100 },
+        "publishedBy": { "type": "string", "maxLength": 128 },
+        "counts": { "type": "object" },
+        "movies": { "type": "array" },
+        "series": { "type": "array" },
+        "seasons": { "type": "array" },
+        "episodes": { "type": "array" },
+        "deletedContentIds": { "type": "array" }
+      },
+      "required": ["releaseId", "revision", "publishedAt", "counts", "movies", "series"]
     }
   },
   "firestore": {
+    "/releases/{releaseId}": {
+      "schema": "releases",
+      "description": "Active published release and snapshots synchronized across Web and Pi Browser"
+    },
     "/content/{contentId}": {
       "schema": "content",
       "description": "Public and admin media metadata repository"
@@ -123,6 +171,10 @@
     "/visitors/{visitorId}": {
       "schema": "visitors",
       "description": "Persistent visitor tracking records for unique visitor analytics"
+    },
+    "/subscriptions/{subscriptionId}": {
+      "schema": "subscriptions",
+      "description": "Permanent VIP subscription records and expiration tracking"
     }
   }
 }

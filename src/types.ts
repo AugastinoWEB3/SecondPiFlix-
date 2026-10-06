@@ -102,10 +102,15 @@ export interface ContentItem {
   duration?: number;
   genre: string;
   language: string;
+  country?: string;
+  director?: string;
+  cast?: string[];
   rating: number;
   quality: 'HD' | 'FHD' | '4K';
   accessType: 'free' | 'premium';
   published: boolean;
+  isFeatured?: boolean;
+  isTrending?: boolean;
   createdAt: string;
   updatedAt: string;
   seasonsCount?: number;
@@ -195,12 +200,24 @@ export interface ContentRatingReview {
 export interface Subscription {
   id: string;
   userId: string;
+  piUsername?: string;
+  piUserId?: string;
   plan: 'monthly' | 'annual';
   pricePi: number;
   transactionId: string;
+  paymentId?: string;
+  paymentStatus?: 'pending' | 'approved' | 'completed' | 'failed' | 'cancelled';
   status: 'pending' | 'active' | 'expired' | 'cancelled';
+  subscriptionStatus?: 'active' | 'expired' | 'cancelled' | 'pending';
+  durationPurchased?: 'monthly' | 'yearly';
+  purchaseDate?: string;
   startDate: string;
+  startAt?: string;
   expiryDate: string;
+  expiresAt?: string;
+  expirationNotifiedAt?: string;
+  expiryReminderNotifiedAt?: string;
+  updatedAt?: string;
 }
 
 export interface PaymentRecord {
@@ -332,5 +349,36 @@ export interface VisitorAnalyticsData {
   recentVisitors: RecentVisitorItem[];
   hourlyToday: Record<number, number>;
   serverTime: string;
+}
+
+export interface PublishedRelease {
+  releaseId: string;
+  revision: number;
+  publishedAt: string;
+  publishedBy?: string;
+  counts: {
+    movies: number;
+    series: number;
+    seasons: number;
+    episodes: number;
+  };
+  movies: Movie[];
+  series: TVSeries[];
+  seasons: Season[];
+  episodes: Episode[];
+  deletedContentIds: string[];
+}
+
+export interface PublishedReleaseStatus {
+  releaseId: string;
+  revision: number;
+  publishedAt: string;
+  publishedBy?: string;
+  counts: {
+    movies: number;
+    series: number;
+    seasons: number;
+    episodes: number;
+  };
 }
 

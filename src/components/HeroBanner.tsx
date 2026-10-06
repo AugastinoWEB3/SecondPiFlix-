@@ -121,6 +121,9 @@ export const HeroBanner: React.FC = () => {
               <span>{current.rating}</span>
             </div>
             <span className="text-zinc-300 font-medium">{current.year}</span>
+            {current.language && (
+              <span className="text-zinc-300 font-medium text-xs">{current.language}</span>
+            )}
             {'duration' in current && Boolean((current as Movie).duration) && (
               <div className="flex items-center gap-1 text-zinc-400">
                 <Clock className="w-3.5 h-3.5" />
@@ -133,8 +136,13 @@ export const HeroBanner: React.FC = () => {
               </span>
             )}
             {current.qualityBadge && (
-              <span className="border border-white/20 text-zinc-300 px-1.5 py-0.5 rounded text-[10px] font-bold">
+              <span className="border border-white/20 text-zinc-300 px-1.5 py-0.5 rounded text-[10px] font-bold bg-black/30">
                 {current.qualityBadge}
+              </span>
+            )}
+            {current.ageClassification && (
+              <span className="border border-white/20 text-zinc-300 px-1.5 py-0.5 rounded text-[10px] font-bold bg-black/30">
+                {current.ageClassification}
               </span>
             )}
           </div>
@@ -145,22 +153,23 @@ export const HeroBanner: React.FC = () => {
           </h1>
 
           {/* Genres */}
-          <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-300">
-            {current.genre?.map((g, idx) => (
-              <span key={g} className="flex items-center gap-2">
-                <span>{g}</span>
-                {idx < current.genre.length - 1 && <span className="text-zinc-600">•</span>}
-              </span>
-            ))}
-          </div>
-
-          {/* Description */}
-          <p className="text-xs sm:text-sm md:text-base text-zinc-300 line-clamp-2 md:line-clamp-3 leading-relaxed drop-shadow max-w-xl font-normal">
-            {current.description}
-          </p>
+          {(() => {
+            const gList = Array.isArray(current.genre) ? current.genre : (typeof current.genre === 'string' ? (current.genre as string).split(',').map(s => s.trim()).filter(Boolean) : []);
+            if (gList.length === 0) return null;
+            return (
+              <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-300">
+                {gList.map((g, idx) => (
+                  <span key={g} className="flex items-center gap-2">
+                    <span>{g}</span>
+                    {idx < gList.length - 1 && <span className="text-zinc-600">•</span>}
+                  </span>
+                ))}
+              </div>
+            );
+          })()}
 
           {/* Action Buttons */}
-          <div className="flex flex-wrap items-center gap-2.5 sm:gap-3 pt-2">
+          <div className="flex flex-wrap items-center gap-2.5 sm:gap-3 pt-1 sm:pt-2">
             <button
               onClick={() => {
                 if (isSeries) {

@@ -1,0 +1,59 @@
+[
+  {
+    "id": "usr_admin",
+    "username": "Frank Gwaza (Owner)",
+    "email": "frank.gwaza.fg@gmail.com",
+    "profileImage": "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80",
+    "role": "admin",
+    "premiumStatus": true,
+    "subscriptionPlan": "annual",
+    "subscriptionExpiry": "2030-12-31T23:59:59Z",
+    "piUsername": "frank_gwaza",
+    "piWalletAddress": "GD6K...FRANKGWAZA",
+    "createdAt": "2025-01-01T00:00:00Z",
+    "notificationSettings": {
+      "newMovies": true,
+      "newEpisodes": true,
+      "announcements": true,
+      "subscription": true
+    }
+  },
+  {
+    "id": "usr_demo",
+    "username": "alex_pi99",
+    "email": "alexpi99@pioneer.network",
+    "profileImage": "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&auto=format&fit=crop&q=80",
+    "role": "user",
+    "premiumStatus": false,
+    "subscriptionPlan": "free",
+    "piUsername": "alex_pi99",
+    "piWalletAddress": "GC3X...PIWALLETDEMO",
+    "createdAt": "2025-02-15T10:00:00Z",
+    "notificationSettings": {
+      "newMovies": true,
+      "newEpisodes": true,
+      "announcements": true,
+      "subscription": true
+    }
+  },
+  {
+    "id": "usr_pi_88918cf6-a9eb-4e85-8ee9-8d4a7ca61a2b",
+    "username": "Augastino",
+    "email": "augastino@pioneer.network",
+    "profileImage": "🤗",
+    "role": "user",
+    "premiumStatus": true,
+    "subscriptionPlan": "monthly",
+    "piUsername": "Augastino",
+    "piUserId": "88918cf6-a9eb-4e85-8ee9-8d4a7ca61a2b",
+    "piWalletAddress": "GDDB29AB29...PI",
+    "createdAt": "2026-09-30T00:51:33.605Z",
+    "notificationSettings": {
+      "newMovies": true,
+      "newEpisodes": true,
+      "announcements": true,
+      "subscription": true
+    },
+    "subscriptionExpiry": "2027-12-29T00:51:33.605Z"
+  }
+]

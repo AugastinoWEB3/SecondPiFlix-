@@ -1,1 +1,15 @@
-[]
+[
+  {
+    "visitorId": "vis_mu6p5rq6_a867f35afc1eb23f",
+    "source": "pi_browser",
+    "piUsername": "alex_pi99",
+    "firstSeen": "2026-09-28T16:36:21.326Z",
+    "lastSeen": "2026-09-28T16:40:18.905Z",
+    "visitDates": [
+      "2026-09-28"
+    ],
+    "visitCount": 1,
+    "createdAt": "2026-09-28T16:36:21.326Z",
+    "updatedAt": "2026-09-28T16:40:18.905Z"
+  }
+]

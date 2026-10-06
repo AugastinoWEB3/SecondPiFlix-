@@ -12,7 +12,7 @@ import {
   orderBy
 } from 'firebase/firestore';
 import { db, auth } from './firebase';
-import { AppSettings } from '../types';
+import { AppSettings, PublishedRelease } from '../types';
 
 export interface EpisodeItem {
   id: string;
@@ -140,7 +140,8 @@ export async function saveContent(item: ContentItem, isEditing = false): Promise
   };
 
   try {
-    await setDoc(contentDoc, payload, { merge: true });
+    const cleanPayload = JSON.parse(JSON.stringify(payload));
+    await setDoc(contentDoc, cleanPayload, { merge: true });
   } catch (err) {
     console.warn('Firestore setDoc failed or restricted, syncing via server API:', err);
   }
@@ -196,7 +197,8 @@ export async function updateContent(id: string, updates: Partial<ContentItem>): 
   };
 
   try {
-    await updateDoc(contentDoc, patch);
+    const cleanPatch = JSON.parse(JSON.stringify(patch));
+    await updateDoc(contentDoc, cleanPatch);
   } catch (err) {
     console.warn('Firestore updateDoc failed, updating via server API:', err);
   }
@@ -226,6 +228,8 @@ export async function deleteContent(id: string): Promise<void> {
 
   try {
     await deleteDoc(doc(db, CONTENT_COLLECTION, id));
+    // Record in deleted_items registry to synchronize across all clients and server
+    await setDoc(doc(db, 'deleted_items', id), { id, deletedAt: new Date().toISOString() });
     firestoreSuccess = true;
   } catch (err: any) {
     lastError = err;
@@ -237,6 +241,7 @@ export async function deleteContent(id: string): Promise<void> {
     const res = await fetch(`/api/content/${id}`, {
       method: 'DELETE',
       headers: {
+        'x-admin-request': 'true',
         ...authHeaders
       }
     });
@@ -251,6 +256,30 @@ export async function deleteContent(id: string): Promise<void> {
   // If neither client-side Firestore nor server could delete it, throw the actual error
   if (!firestoreSuccess && !serverSuccess) {
     throw new Error(lastError?.message || 'Failed to delete content item from database.');
+  }
+}
+
+/**
+ * Real-time listener for permanently deleted content items.
+ */
+export function subscribeToDeletedItems(callback: (deletedIds: string[]) => void): () => void {
+  try {
+    const colRef = collection(db, 'deleted_items');
+    return onSnapshot(
+      colRef,
+      (snapshot) => {
+        const ids: string[] = [];
+        snapshot.forEach(docSnap => {
+          ids.push(docSnap.id);
+        });
+        callback(ids);
+      },
+      (err) => {
+        console.warn('Firestore deleted_items subscription notice:', err);
+      }
+    );
+  } catch (e) {
+    return () => {};
   }
 }
 
@@ -349,7 +378,8 @@ export async function fetchSettingsFromFirestore(): Promise<AppSettings | null> 
 export async function saveSettingsToFirestore(settingsUpdate: Partial<AppSettings>): Promise<boolean> {
   try {
     const docRef = doc(db, SETTINGS_COLLECTION, SETTINGS_DOC_ID);
-    await setDoc(docRef, { ...settingsUpdate, updatedAt: new Date().toISOString() }, { merge: true });
+    const cleanSettings = JSON.parse(JSON.stringify(settingsUpdate));
+    await setDoc(docRef, { ...cleanSettings, updatedAt: new Date().toISOString() }, { merge: true });
     return true;
   } catch (err) {
     console.warn('Firestore saveSettings error:', err);
@@ -439,5 +469,115 @@ export async function cleanExistingInvalidMedia(): Promise<{ checked: number; up
     console.warn('[cleanExistingInvalidMedia] Notice:', err);
   }
   return { checked, updated };
+}
+
+const RELEASES_COLLECTION = 'releases';
+const CURRENT_RELEASE_DOC = 'current';
+
+/**
+ * Fetch the authoritative published release.
+ * Checks the server API first (with cache-busting), and falls back to Firestore releases/current.
+ */
+export async function fetchActiveRelease(): Promise<PublishedRelease | null> {
+  // 1. Try server API with no-cache
+  try {
+    const res = await fetch(`/api/release/current?_t=${Date.now()}`, {
+      headers: {
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        'Pragma': 'no-cache'
+      }
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data && data.success && data.release) {
+        return data.release as PublishedRelease;
+      }
+    }
+  } catch (err) {
+    console.warn('Server active release fetch notice, trying Firestore:', err);
+  }
+
+  // 2. Fallback to Firestore releases/current
+  try {
+    const docRef = doc(db, RELEASES_COLLECTION, CURRENT_RELEASE_DOC);
+    const docSnap = await getDoc(docRef);
+    if (docSnap.exists()) {
+      return docSnap.data() as PublishedRelease;
+    }
+  } catch (fsErr) {
+    console.warn('Firestore active release fetch error:', fsErr);
+  }
+
+  return null;
+}
+
+/**
+ * Real-time listener for the active published release.
+ * Whenever an Admin publishes a new release snapshot, all connected clients (Web & Pi Browser)
+ * receive the exact canonical release immediately without needing a manual reload.
+ */
+export function subscribeToActiveRelease(callback: (release: PublishedRelease) => void): () => void {
+  try {
+    const docRef = doc(db, RELEASES_COLLECTION, CURRENT_RELEASE_DOC);
+    return onSnapshot(
+      docRef,
+      (docSnap) => {
+        if (docSnap.exists()) {
+          const rel = docSnap.data() as PublishedRelease;
+          if (rel && rel.releaseId && Array.isArray(rel.movies)) {
+            callback(rel);
+          }
+        }
+      },
+      (err) => {
+        console.warn('Firestore active release subscription notice:', err);
+      }
+    );
+  } catch (e) {
+    console.warn('Could not initialize subscribeToActiveRelease:', e);
+    return () => {};
+  }
+}
+
+/**
+ * Admin action: Publish current content state as the new canonical release.
+ * Calls /api/admin/publish and persists to Firestore.
+ */
+export async function publishCatalogRelease(adminToken?: string | null): Promise<PublishedRelease> {
+  const authHeaders = await getAuthHeaders();
+  const token = adminToken || localStorage.getItem('piflix_admin_token');
+
+  const res = await fetch('/api/admin/publish', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-admin-request': 'true',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...authHeaders
+    }
+  });
+
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData?.error || `Publish failed with status ${res.status}`);
+  }
+
+  const data = await res.json();
+  if (!data.success || !data.release) {
+    throw new Error(data.error || 'Server did not return a valid published release.');
+  }
+
+  const release = data.release as PublishedRelease;
+
+  // Non-blocking sync to Firestore releases/current and published_snapshots
+  try {
+    const docRef = doc(db, RELEASES_COLLECTION, CURRENT_RELEASE_DOC);
+    await setDoc(docRef, release, { merge: true });
+    await setDoc(doc(db, 'published_snapshots', release.releaseId), release, { merge: true });
+  } catch (fsErr) {
+    console.warn('Firestore release publish sync notice:', fsErr);
+  }
+
+  return release;
 }
 

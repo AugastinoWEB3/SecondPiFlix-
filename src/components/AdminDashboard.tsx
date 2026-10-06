@@ -4,10 +4,10 @@ import {
   Save, Sparkles, Sliders, ShieldCheck, CheckCircle2, AlertTriangle, Search,
   Radio, Layers, Check, X, RefreshCw, Upload, Play, Lock, Unlock,
   Image as ImageIcon, FileVideo, Filter, ExternalLink, LogOut, KeyRound, ArrowUpDown,
-  Mail, Calendar, Globe, TrendingUp, Award, UploadCloud, FolderUp
+  Mail, Calendar, Globe, TrendingUp, Award, UploadCloud, FolderUp, Send
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
-import { ContentItem, Movie, TVSeries, User, VisitorAnalyticsData } from '../types';
+import { ContentItem, Movie, TVSeries, User, VisitorAnalyticsData, PublishedRelease } from '../types';
 import { saveContent, deleteContent, setPublishedState, cleanExistingInvalidMedia } from '../lib/firebaseContent';
 import { createNotification } from '../lib/firebaseNotifications';
 import { uploadMediaToStorage, uploadMediaWithMetadata, deleteMediaFromStorage, uploadBatchVideosToStorage } from '../lib/firebaseStorage';
@@ -51,6 +51,7 @@ export const AdminDashboard: React.FC = () => {
     movies,
     seriesList,
     refreshContent,
+    updateContentItem,
     removeContentItem,
     currentUser,
     playVideo,
@@ -60,8 +61,25 @@ export const AdminDashboard: React.FC = () => {
     adminLoginGoogle,
     adminRegister,
     adminLogout,
-    firebaseAdminUser
+    firebaseAdminUser,
+    currentRelease,
+    isPublishingRelease,
+    publishRelease
   } = useApp();
+
+  // Authoritative Published Release state (Requirement 7)
+  const [publishSuccessInfo, setPublishSuccessInfo] = useState<PublishedRelease | null>(null);
+  const [publishError, setPublishError] = useState<string | null>(null);
+
+  const handlePublishRelease = async () => {
+    setPublishError(null);
+    try {
+      const rel = await publishRelease();
+      setPublishSuccessInfo(rel);
+    } catch (err: any) {
+      setPublishError(err?.message || 'Failed to publish release snapshot.');
+    }
+  };
 
   // Delete confirmation & action states (Fix for Bug 1)
   const [deleteTargetItem, setDeleteTargetItem] = useState<Movie | TVSeries | null>(null);
@@ -987,9 +1005,17 @@ export const AdminDashboard: React.FC = () => {
         }).catch(err => console.error('[Notifications] Failed creating content release notification:', err));
       }
 
+      // Immediately update local application context & cached store for instant UI response
+      updateContentItem(itemToSave);
+
       // Refresh app public catalog
       await refreshContent();
       await loadAdminData();
+      try {
+        await publishRelease();
+      } catch (pubErr) {
+        console.warn('Auto-publish on save notice:', pubErr);
+      }
 
       setTimeout(() => {
         setIsModalOpen(false);
@@ -1039,6 +1065,11 @@ export const AdminDashboard: React.FC = () => {
       removeContentItem(itemId);
       await refreshContent();
       await loadAdminData();
+      try {
+        await publishRelease();
+      } catch (pubErr) {
+        console.warn('Auto-publish on delete notice:', pubErr);
+      }
 
       setDeleteSuccess(`"${deleteTargetItem.title}" was permanently deleted.`);
       setDeleteTargetItem(null);
@@ -1091,6 +1122,11 @@ export const AdminDashboard: React.FC = () => {
 
       await refreshContent();
       await loadAdminData();
+      try {
+        await publishRelease();
+      } catch (pubErr) {
+        console.warn('Auto-publish on toggle notice:', pubErr);
+      }
     } catch (err) {
       console.error('Toggle publish error', err);
     }
@@ -1322,7 +1358,10 @@ export const AdminDashboard: React.FC = () => {
           </div>
           <div>
             <div className="flex items-center gap-2">
-              <h1 className="text-xl font-black tracking-tight text-white">PiFlix+ Master CMS</h1>
+              <h1 className="text-xl font-black tracking-tight text-white flex items-center gap-1.5">
+                <span dir="ltr" style={{ direction: 'ltr', unicodeBidi: 'isolate' }} className="piflix-brand-name">PiFlix+</span>
+                <span>Master CMS</span>
+              </h1>
               <span className="px-2 py-0.5 text-[10px] font-bold rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/30">
                 Verified Admin
               </span>
@@ -1364,6 +1403,26 @@ export const AdminDashboard: React.FC = () => {
           >
             <UploadCloud className="w-4 h-4" />
             <span>Batch Movies</span>
+          </button>
+
+          {/* Master Publish Button (Requirements 1, 2, 4, 7) */}
+          <button
+            onClick={handlePublishRelease}
+            disabled={isPublishingRelease}
+            className="flex items-center gap-2 px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-black shadow-lg shadow-emerald-900/40 border border-emerald-400/40 transition disabled:opacity-50"
+            title="Publish current catalog as canonical release snapshot to Web and Pi Network (apppiflixfat9963.pinet.com)"
+          >
+            {isPublishingRelease ? (
+              <>
+                <RefreshCw className="w-4 h-4 animate-spin text-white" />
+                <span>Publishing Snapshot...</span>
+              </>
+            ) : (
+              <>
+                <Send className="w-4 h-4 text-emerald-200" />
+                <span>Publish to PiFlix+ & Pi Network</span>
+              </>
+            )}
           </button>
 
           <button
@@ -1467,6 +1526,113 @@ export const AdminDashboard: React.FC = () => {
       {/* ---------------------------------------------------------------------- */}
       {adminSection === 'content' && (
         <div className="space-y-4">
+          {/* Authoritative Published Release Snapshot Bar (Requirements 1, 2, 4, 7) */}
+          <div className="p-4 rounded-2xl bg-gradient-to-r from-zinc-900 via-zinc-900 to-zinc-950 border border-zinc-800 shadow-xl flex flex-col md:flex-row md:items-center justify-between gap-3">
+            <div className="flex items-start sm:items-center gap-3">
+              <div className="p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 shrink-0">
+                <Globe className="w-5 h-5" />
+              </div>
+              <div className="space-y-0.5">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-xs font-black text-white uppercase tracking-wider">Current Active Release:</span>
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                    {currentRelease?.releaseId || 'Authoritative Active'}
+                  </span>
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-purple-500/20 text-purple-300 border border-purple-500/30">
+                    Rev #{currentRelease?.revision || 1}
+                  </span>
+                </div>
+                <div className="text-[11px] text-zinc-400 flex items-center gap-2 flex-wrap">
+                  <span>
+                    Published: <strong className="text-zinc-200">{currentRelease?.publishedAt ? new Date(currentRelease.publishedAt).toLocaleString() : 'Active Synchronized'}</strong>
+                  </span>
+                  <span className="text-zinc-600">•</span>
+                  <span>
+                    Serving: <strong className="text-emerald-400">{currentRelease?.counts?.movies ?? movies.length} Movies, {currentRelease?.counts?.series ?? seriesList.length} Series</strong>
+                  </span>
+                  <span className="text-zinc-600">•</span>
+                  <span className="text-zinc-400">Canonical for Web & Pi Network</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 self-end md:self-auto shrink-0">
+              <button
+                onClick={handlePublishRelease}
+                disabled={isPublishingRelease}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold shadow-md shadow-emerald-900/30 transition disabled:opacity-50"
+              >
+                {isPublishingRelease ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    <span>Publishing...</span>
+                  </>
+                ) : (
+                  <>
+                    <Send className="w-3.5 h-3.5" />
+                    <span>Publish New Release</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+
+          {/* Release Publish Success Banner */}
+          {publishSuccessInfo && (
+            <div className="p-4 rounded-2xl bg-emerald-950/60 border border-emerald-500/50 text-white shadow-2xl space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
+                  <h4 className="text-xs font-black uppercase tracking-wide text-emerald-300">
+                    Release {publishSuccessInfo.releaseId} Published Successfully!
+                  </h4>
+                </div>
+                <button
+                  onClick={() => setPublishSuccessInfo(null)}
+                  className="text-zinc-400 hover:text-white p-1 rounded-lg hover:bg-zinc-800 transition"
+                  title="Dismiss banner"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              <p className="text-xs text-zinc-300">
+                Both the standard web application and the Pi Network / Pi Browser environment (<span className="text-emerald-300 font-mono">apppiflixfat9963.pinet.com</span>) are now serving the exact same snapshot of <strong>{publishSuccessInfo.counts.movies} movies</strong> and <strong>{publishSuccessInfo.counts.series} series</strong> ({publishSuccessInfo.counts.seasons} seasons, {publishSuccessInfo.counts.episodes} episodes). All previously deleted content has been permanently purged across all connected clients.
+              </p>
+              <div className="flex items-center gap-3 text-[11px] text-emerald-200/80 pt-1 border-t border-emerald-800/40">
+                <span>Revision #{publishSuccessInfo.revision}</span>
+                <span>•</span>
+                <span>Timestamp: {new Date(publishSuccessInfo.publishedAt).toLocaleString()}</span>
+                <span>•</span>
+                <span>Published by: {publishSuccessInfo.publishedBy || 'Admin'}</span>
+              </div>
+            </div>
+          )}
+
+          {/* Release Publish Error Banner */}
+          {publishError && (
+            <div className="p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/40 text-rose-300 text-xs flex items-center justify-between gap-3 shadow-lg">
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+                <span>{publishError}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handlePublishRelease}
+                  disabled={isPublishingRelease}
+                  className="px-2.5 py-1 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-bold text-[11px]"
+                >
+                  Retry
+                </button>
+                <button
+                  onClick={() => setPublishError(null)}
+                  className="text-rose-400 hover:text-white"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* Filter & Search Bar (Requirement 19) */}
           <div className="p-4 rounded-2xl bg-zinc-900/80 border border-zinc-800 space-y-3">
             <div className="flex flex-col md:flex-row md:items-center gap-3 justify-between">

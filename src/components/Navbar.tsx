@@ -8,6 +8,7 @@ import { UserAvatar } from './UserAvatar';
 import { AppNotification } from '../types';
 import { formatNotificationTime } from '../lib/firebaseNotifications';
 import { useTranslation, SUPPORTED_LANGUAGES, LanguageCode } from '../lib/i18n';
+import { getVisiblePiUsername, isUuidOrInternalId } from '../lib/avatar';
 
 export const Navbar: React.FC = () => {
   const {
@@ -25,6 +26,7 @@ export const Navbar: React.FC = () => {
     seriesList,
     openDetails,
     openPiPayment,
+    openSubscriptionDetails,
     searchQuery,
     setSearchQuery,
     isPiAuthenticating,
@@ -87,6 +89,8 @@ export const Navbar: React.FC = () => {
           <div
             onClick={() => setActiveTab('home')}
             className="cursor-pointer transition hover:opacity-90 shrink-0"
+            dir="ltr"
+            style={{ direction: 'ltr', unicodeBidi: 'isolate' }}
           >
             <PiFlixLogo size="md" />
           </div>
@@ -363,7 +367,7 @@ export const Navbar: React.FC = () => {
 
           {/* Manual Pi Authentication Trigger Button (Only shown when not signed in with Pi) */}
           <div className="relative">
-            {!currentUser.piUsername && (
+            {(!currentUser.piUsername || isUuidOrInternalId(currentUser.piUsername)) && (
               <button
                 onClick={() => signInWithPi(false)}
                 disabled={isPiAuthenticating}
@@ -438,16 +442,36 @@ export const Navbar: React.FC = () => {
                   />
                   <div className="truncate text-start flex-1 min-w-0">
                     <div className="font-bold truncate flex items-center gap-1.5">
-                      <span>{currentUser.username}</span>
-                      {currentUser.piUsername && (
+                      <span>{isPiAuthenticating ? 'Connecting...' : getVisiblePiUsername(currentUser)}</span>
+                      {((currentUser.piUsername && !isUuidOrInternalId(currentUser.piUsername)) || currentUser.piUserId || currentUser.isPiUser) && (
                         <span className="text-[10px] font-mono text-amber-400 bg-amber-500/10 px-1 py-0.5 rounded border border-amber-500/20">π</span>
                       )}
                     </div>
-                    <div className={`text-[10px] truncate ${isDark ? 'text-zinc-400' : 'text-slate-500'}`}>{currentUser.email}</div>
+                    <div className={`text-[10px] truncate ${isDark ? 'text-zinc-400' : 'text-slate-500'}`}>
+                      {(!currentUser.email || isUuidOrInternalId(currentUser.email.split('@')[0]))
+                        ? `${getVisiblePiUsername(currentUser).toLowerCase().replace(/[^a-z0-9]/g, '')}@pioneer.network`
+                        : currentUser.email}
+                    </div>
                     {currentUser.premiumStatus ? (
-                      <span className="inline-block mt-1 text-[9px] font-extrabold px-2 py-0.5 rounded-full bg-amber-500 text-black uppercase">
-                        VIP Subscriber
-                      </span>
+                      <div className="flex items-center gap-1.5 flex-wrap mt-1">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setShowProfileMenu(false);
+                            openSubscriptionDetails();
+                          }}
+                          className="inline-block text-[9px] font-extrabold px-2 py-0.5 rounded-full bg-amber-500 hover:bg-amber-400 active:scale-95 text-black uppercase cursor-pointer transition shadow-xs focus:outline-none"
+                          title="View your subscription details"
+                        >
+                          VIP Subscriber
+                        </button>
+                        {currentUser.subscriptionExpiry && (
+                          <span className={`text-[9px] ${isDark ? 'text-zinc-400' : 'text-slate-500'}`}>
+                            until {new Date(currentUser.subscriptionExpiry).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
+                          </span>
+                        )}
+                      </div>
                     ) : (
                       <span className={`inline-block mt-1 text-[9px] ${isDark ? 'text-zinc-400' : 'text-slate-500'}`}>Free Tier</span>
                     )}
@@ -471,7 +495,7 @@ export const Navbar: React.FC = () => {
                     ) : (
                       <span className="font-serif font-bold text-amber-400 text-sm">π</span>
                     )}
-                    <span>{isPiAuthenticating ? 'Authenticating Pi...' : currentUser.piUsername ? 'Re-authenticate with Pi' : 'Sign in with Pi'}</span>
+                    <span>{isPiAuthenticating ? 'Authenticating Pi...' : (currentUser.piUsername && !isUuidOrInternalId(currentUser.piUsername)) ? 'Re-authenticate with Pi' : 'Sign in with Pi'}</span>
                   </button>
 
                   <button

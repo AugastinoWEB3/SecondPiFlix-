@@ -15,7 +15,9 @@ export const MovieCard: React.FC<MovieCardProps> = ({ content, aspectRatio = 'po
   const isSeries = 'seasonsCount' in content;
   const inList = isInWatchlist(content.id);
   const isLiked = likedIds.includes(content.id);
-  const primaryGenre = content.genre && content.genre.length > 0 ? content.genre[0] : 'Feature';
+  const primaryGenre = Array.isArray(content.genre) 
+    ? (content.genre[0] || 'Feature') 
+    : (content.genre || 'Feature');
   const isDark = theme === 'dark';
 
   const imageSrc = aspectRatio === 'backdrop' ? content.backdrop || content.poster : content.poster;

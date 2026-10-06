@@ -134,19 +134,21 @@ export async function trackVisitorAccess(options: {
       const nowIso = new Date().toISOString();
       const visitorDocRef = doc(db, 'visitors', visitorId);
       
+      const visitorData = {
+        visitorId,
+        source,
+        piUserId: piUserId || null,
+        piUsername: piUsername || null,
+        lastSeen: nowIso,
+        firstSeen: nowIso,
+        visitDates: [todayStr],
+        visitCount: 1,
+        updatedAt: nowIso
+      };
+
       await setDoc(
         visitorDocRef,
-        {
-          visitorId,
-          source,
-          piUserId: piUserId || null,
-          piUsername: piUsername || null,
-          lastSeen: nowIso,
-          firstSeen: nowIso,
-          visitDates: [todayStr],
-          visitCount: 1,
-          updatedAt: nowIso
-        },
+        JSON.parse(JSON.stringify(visitorData)),
         { merge: true }
       );
     } catch (fsErr) {

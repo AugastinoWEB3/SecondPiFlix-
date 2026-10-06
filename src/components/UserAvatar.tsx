@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { getDeterministicEmoji, isCustomImageUrl } from '../lib/avatar';
+import { getDeterministicEmoji, isCustomImageUrl, getVisiblePiUsername } from '../lib/avatar';
 
 interface UserAvatarProps {
   user?: {
@@ -21,7 +21,7 @@ export const UserAvatar: React.FC<UserAvatarProps> = ({
   className = ''
 }) => {
   const [imageError, setImageError] = useState(false);
-  const identifier = user?.piUsername || user?.username || '';
+  const identifier = getVisiblePiUsername(user);
   const profileImage = user?.profileImage;
 
   const hasValidCustomImage = !imageError && isCustomImageUrl(profileImage);
@@ -30,7 +30,7 @@ export const UserAvatar: React.FC<UserAvatarProps> = ({
     return (
       <img
         src={profileImage}
-        alt={user?.username || 'User profile'}
+        alt={identifier || 'User profile'}
         onError={() => setImageError(true)}
         className={`${sizeClass} rounded-full object-cover shrink-0 ${className}`}
       />

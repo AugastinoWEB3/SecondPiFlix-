@@ -1,4 +1,5 @@
 import { User } from '../types';
+import { isUuidOrInternalId } from './avatar';
 
 declare global {
   interface Window {
@@ -238,7 +239,10 @@ export async function authenticateWithPi(options?: {
       },
       body: JSON.stringify({
         accessToken: authResult.accessToken,
-        authResult
+        authResult,
+        username: authResult?.user?.username,
+        piUsername: authResult?.user?.username,
+        uid: authResult?.user?.uid
       })
     });
 
@@ -249,6 +253,20 @@ export async function authenticateWithPi(options?: {
         success: false,
         error: data.error || `Server verification failed with status ${response.status}.`
       };
+    }
+
+    // Ensure the returned user profile has the authentic Pi username and never an internal UUID
+    const sdkPiUsername = authResult?.user?.username?.trim();
+    if (sdkPiUsername && !isUuidOrInternalId(sdkPiUsername)) {
+      data.user.username = sdkPiUsername;
+      data.user.piUsername = sdkPiUsername;
+      data.user.email = `${sdkPiUsername.toLowerCase().replace(/[^a-z0-9]/g, '')}@pioneer.network`;
+    } else if (data.user?.username && isUuidOrInternalId(data.user.username)) {
+      if (data.user.piUsername && !isUuidOrInternalId(data.user.piUsername)) {
+        data.user.username = data.user.piUsername;
+      } else {
+        data.user.username = 'Pioneer';
+      }
     }
 
     // Persist verified user session

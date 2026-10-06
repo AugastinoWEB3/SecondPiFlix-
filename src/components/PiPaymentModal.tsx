@@ -3,6 +3,7 @@ import confetti from 'canvas-confetti';
 import { X, CheckCircle, ShieldCheck, Sparkles, AlertCircle, ArrowRight, Loader2, Coins } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { getPiSDK, initPiSDK, isPiBrowser } from '../lib/piAuth';
+import { getVisiblePiUsername } from '../lib/avatar';
 
 const PiPaymentModalInner: React.FC = () => {
   const {
@@ -139,7 +140,8 @@ const PiPaymentModalInner: React.FC = () => {
                 paymentId,
                 txid,
                 plan: activePlan,
-                userId: currentUser.id
+                userId: currentUser.id,
+                piUsername: getVisiblePiUsername(currentUser)
               })
             });
 
@@ -310,7 +312,7 @@ const PiPaymentModalInner: React.FC = () => {
                 <div className="flex items-center gap-2">
                   <ShieldCheck className="w-4 h-4 text-emerald-400" />
                   <span className="text-zinc-400">Pioneer Account:</span>
-                  <span className="font-semibold text-white">{currentUser.piUsername || currentUser.username}</span>
+                  <span className="font-semibold text-white">{getVisiblePiUsername(currentUser)}</span>
                 </div>
                 <span className="text-[11px] text-purple-400 font-mono">Pi Mainnet / Sandbox</span>
               </div>

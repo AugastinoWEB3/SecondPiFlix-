@@ -5,7 +5,7 @@ import {
 import { useApp } from '../context/AppContext';
 
 export const PremiumPage: React.FC = () => {
-  const { settings, currentUser, openPiPayment, theme } = useApp();
+  const { settings, currentUser, openPiPayment, openSubscriptionDetails, theme } = useApp();
   const isDark = theme === 'dark';
 
   return (
@@ -32,11 +32,22 @@ export const PremiumPage: React.FC = () => {
         </p>
 
         {currentUser.premiumStatus ? (
-          <div className="pt-4 flex items-center justify-center">
-            <div className="p-3 px-6 rounded-2xl bg-amber-500/10 border border-amber-500/40 text-amber-600 dark:text-amber-300 text-xs font-bold flex items-center gap-2">
+          <div className="pt-4 flex flex-col items-center justify-center gap-3">
+            <button
+              type="button"
+              onClick={openSubscriptionDetails}
+              className="p-3 px-6 rounded-2xl bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/40 text-amber-600 dark:text-amber-300 text-xs font-bold flex items-center gap-2 transition cursor-pointer active:scale-95"
+              title="Click to view subscription details"
+            >
               <ShieldCheck className="w-5 h-5 text-amber-500" />
               <span>You currently have an active VIP subscription ({currentUser.subscriptionPlan?.toUpperCase()})</span>
-            </div>
+              <span className="text-[10px] text-amber-400 underline font-semibold ml-1">View Details →</span>
+            </button>
+            {currentUser.subscriptionExpiry && (
+              <p className={`text-xs ${isDark ? 'text-zinc-400' : 'text-slate-500'}`}>
+                Subscription active until <span className="font-semibold text-amber-400">{new Date(currentUser.subscriptionExpiry).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}</span>
+              </p>
+            )}
           </div>
         ) : (
           <div className="pt-4 flex flex-wrap items-center justify-center gap-4">

@@ -1,0 +1,12 @@
+[
+  {
+    "id": "pay-001",
+    "userId": "usr_admin",
+    "transactionId": "TX_PI_ADMIN_ANNUAL_001",
+    "amount": 29.99,
+    "currency": "Pi",
+    "status": "completed",
+    "plan": "annual",
+    "createdAt": "2025-01-01T00:00:00Z"
+  }
+]

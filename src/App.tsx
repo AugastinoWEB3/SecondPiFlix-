@@ -6,6 +6,7 @@ import { ContentRow } from './components/ContentRow';
 import { ContentDetailsModal } from './components/ContentDetailsModal';
 import { VideoPlayer } from './components/VideoPlayer';
 import { PiPaymentModal } from './components/PiPaymentModal';
+import { SubscriptionDetailsModal } from './components/SubscriptionDetailsModal';
 import { MobileBottomNav } from './components/MobileBottomNav';
 import { Footer } from './components/Footer';
 import { SearchPage } from './components/SearchPage';
@@ -75,11 +76,17 @@ const MainAppContent: React.FC = () => {
   }, [movies, seriesList]);
 
   const actionSciFi = useMemo(() => {
-    return movies.filter(m => m.genre?.some(g => /action|sci-fi|cyberpunk|martial|kung fu|adventure|thriller/i.test(g)));
+    return movies.filter(m => {
+      const gList = Array.isArray(m.genre) ? m.genre : (typeof m.genre === 'string' ? (m.genre as string).split(',').map(s => s.trim()).filter(Boolean) : []);
+      return gList.some(g => /action|sci-fi|cyberpunk|martial|kung fu|adventure|thriller/i.test(g));
+    });
   }, [movies]);
 
   const wildlifeNature = useMemo(() => {
-    return movies.filter(m => m.genre?.some(g => /wildlife|nature|documentary|drama|crime/i.test(g)));
+    return movies.filter(m => {
+      const gList = Array.isArray(m.genre) ? m.genre : (typeof m.genre === 'string' ? (m.genre as string).split(',').map(s => s.trim()).filter(Boolean) : []);
+      return gList.some(g => /wildlife|nature|documentary|drama|crime/i.test(g));
+    });
   }, [movies]);
 
   const topRated = useMemo(() => {
@@ -341,7 +348,7 @@ const MainAppContent: React.FC = () => {
                       <div className={`flex items-center gap-3 text-xs ${isDark ? 'text-zinc-400' : 'text-slate-500'}`}>
                         <span>{item.year}</span>
                         <span>•</span>
-                        <span>{item.genre?.[0]}</span>
+                        <span>{Array.isArray(item.genre) ? item.genre[0] : (item.genre || 'Feature')}</span>
                         <span>•</span>
                         <span className="text-amber-500 font-bold">★ {item.rating}</span>
                       </div>
@@ -377,6 +384,7 @@ const MainAppContent: React.FC = () => {
       <ContentDetailsModal />
       <VideoPlayer />
       <PiPaymentModal />
+      <SubscriptionDetailsModal />
 
       {/* Footer */}
       <Footer />

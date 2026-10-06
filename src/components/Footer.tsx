@@ -18,7 +18,9 @@ export const Footer: React.FC = () => {
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-6 sm:gap-8">
           {/* Brand Col */}
           <div className="sm:col-span-2 md:col-span-3 lg:col-span-2 space-y-3">
-            <PiFlixLogo size="md" showTagline={true} />
+            <div dir="ltr" style={{ direction: 'ltr', unicodeBidi: 'isolate' }} className="inline-block">
+              <PiFlixLogo size="md" showTagline={true} />
+            </div>
             <p className={`text-xs max-w-sm leading-relaxed mt-2 ${isDark ? 'text-zinc-400' : 'text-slate-600'}`}>
               PiFlix+ is a next-generation entertainment streaming platform built for the global Pi Network ecosystem. Discover critically acclaimed cinema, original series, and wildlife documentaries with seamless Pi payments.
             </p>

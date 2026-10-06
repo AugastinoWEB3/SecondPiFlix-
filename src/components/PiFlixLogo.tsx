@@ -26,10 +26,23 @@ export const PiFlixLogo: React.FC<PiFlixLogoProps> = ({
   };
 
   return (
-    <div className={`inline-flex flex-col select-none ${className}`}>
-      <div className="flex items-center gap-2.5">
+    <div
+      dir="ltr"
+      data-piflix-brand="true"
+      style={{ direction: 'ltr', unicodeBidi: 'isolate' }}
+      className={`inline-flex flex-col select-none piflix-brand ${className}`}
+    >
+      <div
+        dir="ltr"
+        style={{ direction: 'ltr', unicodeBidi: 'isolate' }}
+        className="flex flex-row items-center gap-2.5"
+      >
         {/* Stylized 3D Ribbon 'P' with Play Icon */}
-        <div className={`relative ${iconSizes[size]} shrink-0 flex items-center justify-center filter drop-shadow-[0_2px_10px_rgba(168,85,247,0.4)]`}>
+        <div
+          dir="ltr"
+          style={{ direction: 'ltr', unicodeBidi: 'isolate' }}
+          className={`relative ${iconSizes[size]} shrink-0 flex items-center justify-center filter drop-shadow-[0_2px_10px_rgba(168,85,247,0.4)]`}
+        >
           <svg
             viewBox="0 0 100 100"
             className="w-full h-full overflow-visible"
@@ -81,16 +94,24 @@ export const PiFlixLogo: React.FC<PiFlixLogoProps> = ({
           </svg>
         </div>
 
-        {/* Brand Wordmark: Pi (Dark in light mode / White in dark) + Flix (Berry Pink) + (Violet) */}
-        <div className="flex items-baseline tracking-tight font-extrabold font-['Outfit']">
-          <span className={`${textSizes[size]} text-slate-900 dark:text-white font-extrabold transition-colors`}>Pi</span>
-          <span className={`${textSizes[size]} text-[#F43F5E] font-black`}>Flix</span>
-          <span className={`${textSizes[size]} text-[#A855F7] font-black ml-0.5`}>+</span>
+        {/* Brand Wordmark: Pi (Dark in light mode / White in dark) + Flix (Berry Pink) + (Violet) - Strictly LTR */}
+        <div
+          dir="ltr"
+          style={{ direction: 'ltr', unicodeBidi: 'isolate' }}
+          className="flex flex-row items-baseline tracking-tight font-extrabold font-['Outfit'] select-none piflix-brand-name"
+        >
+          <span dir="ltr" style={{ direction: 'ltr', unicodeBidi: 'isolate' }} className={`${textSizes[size]} text-slate-900 dark:text-white font-extrabold transition-colors`}>Pi</span>
+          <span dir="ltr" style={{ direction: 'ltr', unicodeBidi: 'isolate' }} className={`${textSizes[size]} text-[#F43F5E] font-black`}>Flix</span>
+          <span dir="ltr" style={{ direction: 'ltr', unicodeBidi: 'isolate' }} className={`${textSizes[size]} text-[#A855F7] font-black ml-0.5`}>+</span>
         </div>
       </div>
 
       {showTagline && (
-        <span className="text-[11px] text-zinc-500 dark:text-zinc-400 font-medium tracking-wide mt-1 pl-0.5 transition-colors">
+        <span
+          dir="ltr"
+          style={{ direction: 'ltr', unicodeBidi: 'isolate' }}
+          className="text-[11px] text-zinc-500 dark:text-zinc-400 font-medium tracking-wide mt-1 pl-0.5 transition-colors"
+        >
           Watch More. Discover More. Experience More.
         </span>
       )}

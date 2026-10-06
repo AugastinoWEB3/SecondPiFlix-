@@ -5,6 +5,7 @@ import { useApp } from '../context/AppContext';
 import { MovieCard } from './MovieCard';
 import { UserAvatar } from './UserAvatar';
 import { formatDuration } from '../lib/formatters';
+import { getVisiblePiUsername } from '../lib/avatar';
 
 interface ContentDetailsModalInnerProps {
   content: Movie | TVSeries;
@@ -136,9 +137,11 @@ const ContentDetailsModalInner: React.FC<ContentDetailsModalInnerProps> = ({ con
 
   // Recommendation engine: find items with matching genres or language
   const allContent: (Movie | TVSeries)[] = [...movies, ...seriesList];
+  const selectedGenres = Array.isArray(selectedContent.genre) ? selectedContent.genre : (typeof selectedContent.genre === 'string' ? (selectedContent.genre as string).split(',').map(s => s.trim()).filter(Boolean) : []);
   const recommendations = allContent.filter(item => {
     if (item.id === selectedContent.id) return false;
-    const commonGenres = item.genre.filter(g => selectedContent.genre.includes(g));
+    const itemGenres = Array.isArray(item.genre) ? item.genre : (typeof item.genre === 'string' ? (item.genre as string).split(',').map(s => s.trim()).filter(Boolean) : []);
+    const commonGenres = itemGenres.filter(g => selectedGenres.includes(g));
     const sameLanguage = item.language === selectedContent.language;
     return commonGenres.length > 0 || sameLanguage;
   }).slice(0, 6);
@@ -154,7 +157,7 @@ const ContentDetailsModalInner: React.FC<ContentDetailsModalInnerProps> = ({ con
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           userId: currentUser.id,
-          username: currentUser.username,
+          username: getVisiblePiUsername(currentUser),
           userImage: currentUser.profileImage,
           contentId: selectedContent.id,
           rating: newRating,
@@ -215,29 +218,35 @@ const ContentDetailsModalInner: React.FC<ContentDetailsModalInnerProps> = ({ con
 
           {/* Hero Content on Backdrop */}
           <div className="absolute bottom-5 sm:bottom-6 left-5 sm:left-6 right-5 sm:right-6 flex flex-col items-start text-left justify-end gap-2.5 sm:gap-3 max-w-2xl sm:max-w-3xl z-20">
-            {/* Badges & Metadata starting from LEFT */}
+            {/* 1. Top metadata row: Movie/Series badge + VIP badge + year + rating + language + season count / duration */}
             <div className="flex flex-wrap items-center gap-2 text-xs font-semibold">
+              {/* Movie/Series type badge */}
+              <span className="bg-purple-600/30 text-purple-300 border border-purple-500/40 text-xs px-2.5 py-0.5 rounded-full font-semibold">
+                {isSeries ? 'Series' : 'Movie'}
+              </span>
+
+              {/* VIP badge when applicable */}
               {selectedContent.isPremium && (
                 <span className="bg-gradient-to-r from-amber-500 to-rose-500 text-black font-extrabold text-[10px] px-2 py-0.5 rounded shadow flex items-center gap-1">
                   <Sparkles className="w-3 h-3" />
                   PIFLIX+ VIP
                 </span>
               )}
-              {/* Movie/Series type badge */}
-              <span className="bg-purple-600/30 text-purple-300 border border-purple-500/40 text-xs px-2.5 py-0.5 rounded-full font-semibold">
-                {isSeries ? 'Series' : 'Movie'}
-              </span>
+
               {/* Year */}
               <span className="text-zinc-300 text-xs font-semibold">{selectedContent.year}</span>
+
               {/* Rating */}
               <div className="flex items-center gap-1 text-amber-400 font-bold bg-black/40 backdrop-blur-md px-2 py-0.5 rounded border border-white/10 text-xs">
                 <Star className="w-3.5 h-3.5 fill-amber-400" />
                 <span>{selectedContent.rating} / 10</span>
               </div>
+
               {/* Language */}
               <span className="text-zinc-400">•</span>
               <span className="text-zinc-300 text-xs">{selectedContent.language}</span>
-              {/* Duration */}
+
+              {/* Duration for movie */}
               {'duration' in selectedContent && Boolean((selectedContent as Movie).duration) && (
                 <>
                   <span className="text-zinc-400">•</span>
@@ -247,6 +256,8 @@ const ContentDetailsModalInner: React.FC<ContentDetailsModalInnerProps> = ({ con
                   </span>
                 </>
               )}
+
+              {/* Season count for series */}
               {isSeries && 'seasonsCount' in selectedContent && (
                 <>
                   <span className="text-zinc-400">•</span>
@@ -255,46 +266,44 @@ const ContentDetailsModalInner: React.FC<ContentDetailsModalInnerProps> = ({ con
                   </span>
                 </>
               )}
-              {/* Resolution / quality */}
-              {selectedContent.qualityBadge && (
-                <span className="border border-white/20 text-zinc-300 text-[10px] font-bold px-1.5 py-0.5 rounded">
-                  {selectedContent.qualityBadge}
-                </span>
-              )}
-              {selectedContent.ageClassification && (
-                <span className="border border-white/20 text-zinc-300 text-[10px] font-bold px-1.5 py-0.5 rounded">
-                  {selectedContent.ageClassification}
-                </span>
-              )}
             </div>
 
-            {/* Movie/Series title */}
+            {/* 2. Secondary metadata: Quality (HD/4K) + age rating */}
+            {(selectedContent.qualityBadge || selectedContent.ageClassification) && (
+              <div className="flex items-center gap-1.5 text-xs">
+                {selectedContent.qualityBadge && (
+                  <span className="border border-white/20 text-zinc-300 text-[10px] font-bold px-1.5 py-0.5 rounded bg-black/30 backdrop-blur-sm">
+                    {selectedContent.qualityBadge}
+                  </span>
+                )}
+                {selectedContent.ageClassification && (
+                  <span className="border border-white/20 text-zinc-300 text-[10px] font-bold px-1.5 py-0.5 rounded bg-black/30 backdrop-blur-sm">
+                    {selectedContent.ageClassification}
+                  </span>
+                )}
+              </div>
+            )}
+
+            {/* 3. Movie/Series title */}
             <h1 className="text-2xl sm:text-3xl md:text-4xl font-extrabold text-white tracking-tight drop-shadow-md text-left">
               {selectedContent.title}
             </h1>
 
-            {/* Genres / category information */}
-            {selectedContent.genre && selectedContent.genre.length > 0 && (
+            {/* 4. Genre tags */}
+            {selectedGenres.length > 0 && (
               <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-300 text-left">
-                {selectedContent.genre.map((g, idx) => (
+                {selectedGenres.map((g, idx) => (
                   <span key={g} className="flex items-center gap-2">
                     <span className="bg-zinc-900/70 backdrop-blur-md px-2 py-0.5 rounded border border-zinc-700/60 text-zinc-300">
                       {g}
                     </span>
-                    {idx < selectedContent.genre.length - 1 && <span className="text-zinc-600 hidden sm:inline">•</span>}
+                    {idx < selectedGenres.length - 1 && <span className="text-zinc-600 hidden sm:inline">•</span>}
                   </span>
                 ))}
               </div>
             )}
 
-            {/* Synopsis / description */}
-            {selectedContent.description && (
-              <p className="text-xs sm:text-sm text-zinc-300 line-clamp-2 sm:line-clamp-3 leading-relaxed drop-shadow max-w-2xl font-normal text-left">
-                {selectedContent.description}
-              </p>
-            )}
-
-            {/* Action buttons starting from LEFT */}
+            {/* 5. Action buttons starting from LEFT */}
             <div className="flex flex-wrap items-center gap-2.5 sm:gap-3 pt-1">
               {/* Watch Now / View Seasons button */}
               <button
@@ -417,7 +426,7 @@ const ContentDetailsModalInner: React.FC<ContentDetailsModalInnerProps> = ({ con
               <div className="pt-2">
                 <span className="text-xs font-semibold text-zinc-400 block mb-2">Genres:</span>
                 <div className="flex flex-wrap gap-2">
-                  {selectedContent.genre?.map(g => (
+                  {selectedGenres.map(g => (
                     <span
                       key={g}
                       className="px-3 py-1 bg-zinc-800/80 border border-zinc-700 text-zinc-300 text-xs rounded-lg font-medium"

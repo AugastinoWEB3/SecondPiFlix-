@@ -69,6 +69,29 @@ service cloud.firestore {
       allow delete: if true;
     }
 
+    // Authoritative Published Releases & Snapshots
+    // Public read access so both Web and Pi Browser users resolve the same active release.
+    match /releases/{releaseId} {
+      allow read: if true;
+      allow create, update, delete: if true;
+    }
+
+    match /published_releases/{releaseId} {
+      allow read: if true;
+      allow create, update, delete: if true;
+    }
+
+    match /published_snapshots/{snapshotId} {
+      allow read: if true;
+      allow create, update, delete: if true;
+    }
+
+    // Deleted content items registry for instant cross-device synchronization and purge
+    match /deleted_items/{itemId} {
+      allow read: if true;
+      allow create, update, delete: if true;
+    }
+
     // Settings collection (platform configuration, pricing, announcements)
     // All users can read settings for pricing, VIP tiers, and maintenance status.
     // Only authenticated administrators can modify settings.
@@ -135,6 +158,20 @@ service cloud.firestore {
       allow read: if isAdmin();
       allow create: if isValidId(visitorId) && isValidVisitor(incoming());
       allow update: if isValidId(visitorId) && isValidVisitor(incoming());
+      allow delete: if isAdmin();
+    }
+
+    // Subscriptions collection (persistent VIP memberships and expiration records)
+    match /subscriptions/{subscriptionId} {
+      allow read: if true;
+      allow create, update: if true;
+      allow delete: if isAdmin();
+    }
+
+    // Users collection (persistent user profiles and VIP status)
+    match /users/{userId} {
+      allow read: if true;
+      allow create, update: if true;
       allow delete: if isAdmin();
     }
   }

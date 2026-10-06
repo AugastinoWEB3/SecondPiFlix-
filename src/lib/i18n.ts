@@ -386,7 +386,7 @@ export const TRANSLATIONS: Record<SupportedLanguage, Record<string, string>> = {
     minutes: 'دقيقة',
     noEpisodesFound: 'لا توجد حلقات لهذا الموسم حالياً.',
     continueWatching: 'متابعة المشاهدة',
-    featuredNow: 'مميز على PiFlix+'
+    featuredNow: 'مميز على \u2066PiFlix+\u2069'
   },
   'fr': {
     home: 'Accueil',

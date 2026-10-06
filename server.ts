@@ -12,8 +12,20 @@ import { execFile } from 'child_process';
 import util from 'util';
 import { createServer as createViteServer } from 'vite';
 import { initialSettings, defaultUsers, sampleMovies, sampleSeries, sampleSeasons, sampleEpisodes, sampleAds } from './src/data/mockData';
-import { Movie, TVSeries, Season, Episode, User, WatchHistoryItem, WatchlistItem, LikedItem, ContentRatingReview, Subscription, PaymentRecord, AppSettings, AppNotification, ContentItem, VisitorRecord } from './src/types';
+import { Movie, TVSeries, Season, Episode, User, WatchHistoryItem, WatchlistItem, LikedItem, ContentRatingReview, Subscription, PaymentRecord, AppSettings, AppNotification, ContentItem, VisitorRecord, PublishedRelease } from './src/types';
 import { getEmailStatus, getAllMessages, syncMailbox, sendReply, setMessageReadStatus } from './server/supportEmail';
+import { initializeApp as initFirebaseApp, getApps as getFirebaseApps } from 'firebase/app';
+import {
+  getFirestore as getFirebaseFirestore,
+  collection as firestoreCollection,
+  doc as firestoreDoc,
+  getDocs as firestoreGetDocs,
+  getDoc as firestoreGetDoc,
+  setDoc as firestoreSetDoc,
+  deleteDoc as firestoreDeleteDoc,
+  onSnapshot as firestoreOnSnapshot,
+  Firestore
+} from 'firebase/firestore';
 
 const execFilePromise = util.promisify(execFile);
 
@@ -158,6 +170,17 @@ if (fs.existsSync(firebaseConfigFile)) {
   }
 }
 
+let firestoreDb: Firestore | null = null;
+try {
+  const firebaseApp = getFirebaseApps().length > 0
+    ? getFirebaseApps()[0]
+    : initFirebaseApp(firebaseConfig as any);
+  firestoreDb = getFirebaseFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId);
+  console.info('[Server Firebase] Initialized Firestore client for database:', firebaseConfig.firestoreDatabaseId);
+} catch (fbInitErr) {
+  console.error('[Server Firebase] Failed to initialize Firestore client:', fbInitErr);
+}
+
 // Persistent Cover Serving & Cloud Fallback across restarts
 app.get('/uploads/covers/:filename', async (req: Request, res: Response) => {
   const safeFilename = path.basename(req.params.filename);
@@ -169,28 +192,26 @@ app.get('/uploads/covers/:filename', async (req: Request, res: Response) => {
   }
 
   // If not on disk (e.g. after container restart), recover from Firestore media_assets
-  try {
-    const cleanId = safeFilename.replace(/\.[^.]+$/, '');
-    const projectId = firebaseConfig.projectId || 'empyrean-patrol-bvxch';
-    const databaseId = firebaseConfig.firestoreDatabaseId || 'ai-studio-piflix-2d1bb7c4-88f0-466a-95d5-c25d95f2c9a6';
-    const docUrl = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/${databaseId}/documents/media_assets/${cleanId}`;
-
-    const fsRes = await fetch(docUrl);
-    if (fsRes.ok) {
-      const docData = await fsRes.json();
-      const base64Data = docData.fields?.data?.stringValue;
-      const mimeType = docData.fields?.mimeType?.stringValue || 'image/jpeg';
-      if (base64Data) {
-        const cleanBase64 = base64Data.replace(/^data:[^;]+;base64,/, '');
-        const buffer = Buffer.from(cleanBase64, 'base64');
-        try { fs.writeFileSync(filePath, buffer); } catch {}
-        res.setHeader('Content-Type', mimeType);
-        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
-        return res.send(buffer);
+  if (firestoreDb) {
+    try {
+      const cleanId = safeFilename.replace(/\.[^.]+$/, '');
+      const docSnap = await firestoreGetDoc(firestoreDoc(firestoreDb, 'media_assets', cleanId));
+      if (docSnap.exists()) {
+        const docData = docSnap.data();
+        const base64Data = docData.data;
+        const mimeType = docData.mimeType || 'image/jpeg';
+        if (base64Data) {
+          const cleanBase64 = base64Data.replace(/^data:[^;]+;base64,/, '');
+          const buffer = Buffer.from(cleanBase64, 'base64');
+          try { fs.writeFileSync(filePath, buffer); } catch {}
+          res.setHeader('Content-Type', mimeType);
+          res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+          return res.send(buffer);
+        }
       }
+    } catch (recoverErr) {
+      console.warn('[Cover Recovery] Notice:', recoverErr);
     }
-  } catch (recoverErr) {
-    console.warn('[Cover Recovery] Notice:', recoverErr);
   }
 
   return res.redirect('https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=800&auto=format&fit=crop&q=80');
@@ -207,27 +228,25 @@ app.get('/api/media/covers/:assetId', async (req: Request, res: Response) => {
     return res.sendFile(diskPath);
   }
 
-  try {
-    const projectId = firebaseConfig.projectId || 'empyrean-patrol-bvxch';
-    const databaseId = firebaseConfig.firestoreDatabaseId || 'ai-studio-piflix-2d1bb7c4-88f0-466a-95d5-c25d95f2c9a6';
-    const docUrl = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/${databaseId}/documents/media_assets/${assetId}`;
-
-    const fsRes = await fetch(docUrl);
-    if (fsRes.ok) {
-      const docData = await fsRes.json();
-      const base64Data = docData.fields?.data?.stringValue;
-      const mimeType = docData.fields?.mimeType?.stringValue || 'image/jpeg';
-      if (base64Data) {
-        const cleanBase64 = base64Data.replace(/^data:[^;]+;base64,/, '');
-        const buffer = Buffer.from(cleanBase64, 'base64');
-        try { fs.writeFileSync(diskPath, buffer); } catch {}
-        res.setHeader('Content-Type', mimeType);
-        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
-        return res.send(buffer);
+  if (firestoreDb) {
+    try {
+      const docSnap = await firestoreGetDoc(firestoreDoc(firestoreDb, 'media_assets', assetId));
+      if (docSnap.exists()) {
+        const docData = docSnap.data();
+        const base64Data = docData.data;
+        const mimeType = docData.mimeType || 'image/jpeg';
+        if (base64Data) {
+          const cleanBase64 = base64Data.replace(/^data:[^;]+;base64,/, '');
+          const buffer = Buffer.from(cleanBase64, 'base64');
+          try { fs.writeFileSync(diskPath, buffer); } catch {}
+          res.setHeader('Content-Type', mimeType);
+          res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+          return res.send(buffer);
+        }
       }
+    } catch (err) {
+      console.warn('[api/media/covers] Notice:', err);
     }
-  } catch (err) {
-    console.warn('[api/media/covers] Notice:', err);
   }
 
   return res.redirect('https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=800&auto=format&fit=crop&q=80');
@@ -497,16 +516,41 @@ if (!fs.existsSync(DATA_DIR)) {
 }
 const CONTENT_STORE_FILE = path.join(DATA_DIR, 'content_store.json');
 const SETTINGS_STORE_FILE = path.join(DATA_DIR, 'settings_store.json');
+const PUBLISHED_RELEASE_STORE_FILE = path.join(DATA_DIR, 'published_release_store.json');
 
 // Persistent stores for the server lifecycle
 const INTERACTIONS_STORE_FILE = path.join(DATA_DIR, 'interactions_store.json');
 
 let appSettings: AppSettings = { ...initialSettings };
-let users: User[] = JSON.parse(JSON.stringify(defaultUsers));
-let movies: Movie[] = JSON.parse(JSON.stringify(sampleMovies));
-let seriesList: TVSeries[] = JSON.parse(JSON.stringify(sampleSeries));
-let seasonsList: Season[] = JSON.parse(JSON.stringify(sampleSeasons));
-let episodesList: Episode[] = JSON.parse(JSON.stringify(sampleEpisodes));
+let activeRelease: PublishedRelease | null = null;
+let users: User[] = [];
+let subscriptions: Subscription[] = [];
+let payments: PaymentRecord[] = [];
+let notifications: AppNotification[] = [
+  {
+    id: 'notif-1',
+    userId: 'all',
+    title: 'New Release: The Pi Syndicate',
+    message: 'Stream Season 1 & 2 of the groundbreaking crypto thriller now on PiFlix+.',
+    type: 'new_episode',
+    contentId: 's-pi-syndicate',
+    createdAt: new Date(Date.now() - 7200000).toISOString(),
+    read: false
+  },
+  {
+    id: 'notif-2',
+    userId: 'all',
+    title: 'Special Pi Pioneer Upgrade',
+    message: 'Unlock unlimited ad-free streaming for only 3.14 Pi per month.',
+    type: 'premium',
+    createdAt: new Date(Date.now() - 86400000).toISOString(),
+    read: false
+  }
+];
+let movies: Movie[] = [];
+let seriesList: TVSeries[] = [];
+let seasonsList: Season[] = [];
+let episodesList: Episode[] = [];
 let deletedContentIds: Set<string> = new Set();
 
 let watchHistory: WatchHistoryItem[] = [
@@ -708,6 +752,646 @@ function saveContentStore() {
 }
 
 // --------------------------------------------------------------------------
+// AUTHORITATIVE PUBLISHED RELEASE / SNAPSHOT SYSTEM
+// --------------------------------------------------------------------------
+function loadPublishedReleaseStore() {
+  try {
+    if (fs.existsSync(PUBLISHED_RELEASE_STORE_FILE)) {
+      const data = JSON.parse(fs.readFileSync(PUBLISHED_RELEASE_STORE_FILE, 'utf-8'));
+      if (data && data.releaseId && Array.isArray(data.movies)) {
+        // Enforce deleted content isolation
+        data.movies = data.movies.filter((m: Movie) => !deletedContentIds.has(m.id));
+        data.series = data.series.filter((s: TVSeries) => !deletedContentIds.has(s.id));
+        data.counts = {
+          movies: data.movies.length,
+          series: data.series.length,
+          seasons: data.seasons?.length || 0,
+          episodes: data.episodes?.length || 0
+        };
+        activeRelease = data as PublishedRelease;
+        console.info(`[ReleaseStore] Loaded active published release ${activeRelease.releaseId} (Revision ${activeRelease.revision}): ${activeRelease.counts.movies} movies, ${activeRelease.counts.series} series.`);
+        return;
+      }
+    }
+  } catch (err) {
+    console.warn('Failed to load published_release_store.json:', err);
+  }
+  // If no release exists yet, construct initial published release from current state
+  publishAuthoritativeRelease('System Initialization');
+}
+
+function savePublishedReleaseStore() {
+  try {
+    if (activeRelease) {
+      fs.writeFileSync(PUBLISHED_RELEASE_STORE_FILE, JSON.stringify(activeRelease, null, 2), 'utf-8');
+    }
+  } catch (err) {
+    console.error('Failed to save published_release_store.json:', err);
+  }
+}
+
+function publishAuthoritativeRelease(publishedBy = 'Admin'): PublishedRelease {
+  // 1. Filter strictly published and non-deleted movies
+  const publishedMovies = movies.filter(m => 
+    !deletedContentIds.has(m.id) &&
+    (m.isPublished !== false && m.published !== false)
+  );
+
+  // 2. Filter strictly published and non-deleted series
+  const publishedSeries = seriesList.filter(s => 
+    !deletedContentIds.has(s.id) &&
+    (s.isPublished !== false && s.published !== false)
+  );
+
+  const publishedSeriesIds = new Set(publishedSeries.map(s => s.id));
+  const publishedSeasons = seasonsList.filter(sn => publishedSeriesIds.has(sn.seriesId));
+  const publishedEpisodes = episodesList.filter(ep => publishedSeriesIds.has(ep.seriesId));
+
+  const newRevision = (activeRelease?.revision || 0) + 1;
+  const newReleaseId = `rel_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+  const publishedAt = new Date().toISOString();
+
+  const newRelease: PublishedRelease = {
+    releaseId: newReleaseId,
+    revision: newRevision,
+    publishedAt,
+    publishedBy,
+    counts: {
+      movies: publishedMovies.length,
+      series: publishedSeries.length,
+      seasons: publishedSeasons.length,
+      episodes: publishedEpisodes.length
+    },
+    movies: publishedMovies,
+    series: publishedSeries,
+    seasons: publishedSeasons,
+    episodes: publishedEpisodes,
+    deletedContentIds: Array.from(deletedContentIds)
+  };
+
+  // Atomically swap the active release pointer
+  activeRelease = newRelease;
+  savePublishedReleaseStore();
+
+  console.info(`[PiFlix+ Release System] Published Release ${newRelease.releaseId} (Revision ${newRelease.revision}) at ${newRelease.publishedAt}. Content: ${newRelease.counts.movies} movies, ${newRelease.counts.series} series, ${newRelease.counts.seasons} seasons, ${newRelease.counts.episodes} episodes.`);
+
+  // Non-blocking sync to Firestore releases/current and published_snapshots
+  if (firestoreDb) {
+    try {
+      const releaseDocRef = firestoreDoc(firestoreCollection(firestoreDb, 'releases'), 'current');
+      firestoreSetDoc(releaseDocRef, newRelease, { merge: true }).catch(err => {
+        console.warn('[Firestore Release Sync Warning]:', err);
+      });
+
+      const snapshotDocRef = firestoreDoc(firestoreCollection(firestoreDb, 'published_snapshots'), newRelease.releaseId);
+      firestoreSetDoc(snapshotDocRef, newRelease, { merge: true }).catch(() => {});
+    } catch (fsErr) {
+      console.warn('[Firestore Release Setup Error]:', fsErr);
+    }
+  }
+
+  return newRelease;
+}
+
+function syncActiveReleaseState(publishedBy = 'Admin Auto-Sync'): PublishedRelease {
+  const publishedMovies = movies.filter(m => 
+    !deletedContentIds.has(m.id) &&
+    (m.isPublished !== false && m.published !== false)
+  );
+
+  const publishedSeries = seriesList.filter(s => 
+    !deletedContentIds.has(s.id) &&
+    (s.isPublished !== false && s.published !== false)
+  );
+
+  const publishedSeriesIds = new Set(publishedSeries.map(s => s.id));
+  const publishedSeasons = seasonsList.filter(sn => publishedSeriesIds.has(sn.seriesId));
+  const publishedEpisodes = episodesList.filter(ep => publishedSeriesIds.has(ep.seriesId));
+
+  const revision = (activeRelease?.revision || 10) + 1;
+  const releaseId = activeRelease?.releaseId || `rel_${Date.now()}_canonical`;
+  const publishedAt = new Date().toISOString();
+
+  activeRelease = {
+    releaseId,
+    revision,
+    publishedAt,
+    publishedBy: activeRelease?.publishedBy || publishedBy,
+    counts: {
+      movies: publishedMovies.length,
+      series: publishedSeries.length,
+      seasons: publishedSeasons.length,
+      episodes: publishedEpisodes.length
+    },
+    movies: publishedMovies,
+    series: publishedSeries,
+    seasons: publishedSeasons,
+    episodes: publishedEpisodes,
+    deletedContentIds: Array.from(deletedContentIds)
+  };
+
+  savePublishedReleaseStore();
+
+  if (firestoreDb) {
+    try {
+      const releaseDocRef = firestoreDoc(firestoreCollection(firestoreDb, 'releases'), 'current');
+      firestoreSetDoc(releaseDocRef, activeRelease, { merge: true }).catch(() => {});
+      const pubRelDocRef = firestoreDoc(firestoreCollection(firestoreDb, 'published_releases'), 'current');
+      firestoreSetDoc(pubRelDocRef, activeRelease, { merge: true }).catch(() => {});
+      const snapshotDocRef = firestoreDoc(firestoreCollection(firestoreDb, 'published_snapshots'), releaseId);
+      firestoreSetDoc(snapshotDocRef, activeRelease, { merge: true }).catch(() => {});
+    } catch (fsErr) {
+      console.warn('[Firestore syncActiveReleaseState Warning]:', fsErr);
+    }
+  }
+
+  return activeRelease;
+}
+
+
+// --------------------------------------------------------------------------
+// USERS, SUBSCRIPTIONS & PAYMENTS PERSISTENT STORES & FIRESTORE SYNCHRONIZATION
+// --------------------------------------------------------------------------
+const USERS_STORE_FILE = path.join(DATA_DIR, 'users_store.json');
+const SUBSCRIPTIONS_STORE_FILE = path.join(DATA_DIR, 'subscriptions_store.json');
+const PAYMENTS_STORE_FILE = path.join(DATA_DIR, 'payments_store.json');
+
+// Helper to detect internal UUID or database token - MUST NEVER be displayed as username
+function isUuidOrInternalId(val?: string | null): boolean {
+  if (!val || typeof val !== 'string') return false;
+  const s = val.trim();
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s)) return true;
+  if (/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i.test(s)) return true;
+  if (/^usr_pi_/i.test(s)) return true;
+  if (/^usr_\d{10,}/i.test(s)) return true;
+  if (/^(jwt_|TX_|PI_TX_|sub_)/i.test(s)) return true;
+  return false;
+}
+
+function getVisiblePiUsername(
+  user?: { username?: string; piUsername?: string } | null,
+  fallback = 'Pioneer'
+): string {
+  if (!user) return fallback;
+  if (user.piUsername && !isUuidOrInternalId(user.piUsername)) {
+    return user.piUsername;
+  }
+  if (user.username && !isUuidOrInternalId(user.username)) {
+    return user.username;
+  }
+  return fallback;
+}
+
+function loadUsersStore(): User[] {
+  try {
+    if (fs.existsSync(USERS_STORE_FILE)) {
+      const data = JSON.parse(fs.readFileSync(USERS_STORE_FILE, 'utf-8'));
+      if (Array.isArray(data) && data.length > 0) {
+        const merged = [...data];
+        for (const defU of defaultUsers) {
+          if (!merged.some(u => u.id === defU.id || (defU.email && u.email?.toLowerCase() === defU.email.toLowerCase()))) {
+            merged.push(defU);
+          }
+        }
+        for (const u of merged) {
+          if (u.username && isUuidOrInternalId(u.username)) {
+            u.username = (u.piUsername && !isUuidOrInternalId(u.piUsername)) ? u.piUsername : 'Pioneer';
+          }
+          if (u.piUsername && isUuidOrInternalId(u.piUsername)) {
+            u.piUsername = undefined;
+          }
+        }
+        console.info(`[UsersStore] Loaded ${merged.length} users from persistent store.`);
+        return merged;
+      }
+    }
+  } catch (err) {
+    console.warn('Failed to load users_store.json:', err);
+  }
+  return JSON.parse(JSON.stringify(defaultUsers));
+}
+
+function saveUsersStore() {
+  try {
+    fs.writeFileSync(USERS_STORE_FILE, JSON.stringify(users, null, 2), 'utf-8');
+  } catch (err) {
+    console.error('Failed to save users_store.json:', err);
+  }
+}
+
+function loadSubscriptionsStore(): Subscription[] {
+  const initialSubscriptions: Subscription[] = [
+    {
+      id: 'sub-admin',
+      userId: 'usr_admin',
+      piUsername: 'piflix_admin',
+      plan: 'annual',
+      pricePi: 29.99,
+      transactionId: 'TX_PI_ADMIN_ANNUAL_001',
+      paymentId: 'pi_pay_admin_001',
+      paymentStatus: 'completed',
+      status: 'active',
+      subscriptionStatus: 'active',
+      durationPurchased: 'yearly',
+      purchaseDate: '2025-01-01T00:00:00Z',
+      startDate: '2025-01-01T00:00:00Z',
+      startAt: '2025-01-01T00:00:00Z',
+      expiryDate: '2030-12-31T23:59:59Z',
+      expiresAt: '2030-12-31T23:59:59Z',
+      updatedAt: '2025-01-01T00:00:00Z'
+    }
+  ];
+
+  try {
+    if (fs.existsSync(SUBSCRIPTIONS_STORE_FILE)) {
+      const data = JSON.parse(fs.readFileSync(SUBSCRIPTIONS_STORE_FILE, 'utf-8'));
+      if (Array.isArray(data) && data.length > 0) {
+        for (const s of data) {
+          if (s.piUsername && isUuidOrInternalId(s.piUsername)) {
+            s.piUsername = undefined;
+          }
+        }
+        console.info(`[SubscriptionsStore] Loaded ${data.length} subscriptions from persistent store.`);
+        return data;
+      }
+    }
+  } catch (err) {
+    console.warn('Failed to load subscriptions_store.json:', err);
+  }
+  return initialSubscriptions;
+}
+
+function saveSubscriptionsStore() {
+  try {
+    fs.writeFileSync(SUBSCRIPTIONS_STORE_FILE, JSON.stringify(subscriptions, null, 2), 'utf-8');
+  } catch (err) {
+    console.error('Failed to save subscriptions_store.json:', err);
+  }
+}
+
+function loadPaymentsStore(): PaymentRecord[] {
+  const initialPayments: PaymentRecord[] = [
+    {
+      id: 'pay-001',
+      userId: 'usr_admin',
+      transactionId: 'TX_PI_ADMIN_ANNUAL_001',
+      amount: 29.99,
+      currency: 'Pi',
+      status: 'completed',
+      plan: 'annual',
+      createdAt: '2025-01-01T00:00:00Z'
+    }
+  ];
+
+  try {
+    if (fs.existsSync(PAYMENTS_STORE_FILE)) {
+      const data = JSON.parse(fs.readFileSync(PAYMENTS_STORE_FILE, 'utf-8'));
+      if (Array.isArray(data) && data.length > 0) {
+        return data;
+      }
+    }
+  } catch (err) {
+    console.warn('Failed to load payments_store.json:', err);
+  }
+  return initialPayments;
+}
+
+function savePaymentsStore() {
+  try {
+    fs.writeFileSync(PAYMENTS_STORE_FILE, JSON.stringify(payments, null, 2), 'utf-8');
+  } catch (err) {
+    console.error('Failed to save payments_store.json:', err);
+  }
+}
+
+async function syncSubscriptionToFirestore(sub: Subscription) {
+  if (!firestoreDb) return;
+  try {
+    const docRef = firestoreDoc(firestoreDb, 'subscriptions', sub.id);
+    const cleanSub: Record<string, any> = {};
+    for (const [key, val] of Object.entries(sub)) {
+      if (val !== undefined && val !== null) {
+        cleanSub[key] = val;
+      }
+    }
+    await firestoreSetDoc(docRef, cleanSub, { merge: true });
+    console.info(`[Firestore Subscriptions] Persisted subscription ${sub.id} to Firestore.`);
+  } catch (err) {
+    console.warn(`[Firestore Subscriptions] Notice saving ${sub.id}:`, err);
+  }
+}
+
+async function syncUserToFirestore(user: User) {
+  if (!firestoreDb) return;
+  try {
+    const docRef = firestoreDoc(firestoreDb, 'users', user.id);
+    const cleanUser: Record<string, any> = {};
+    for (const [key, val] of Object.entries(user)) {
+      if (val !== undefined && val !== null) {
+        cleanUser[key] = val;
+      }
+    }
+    await firestoreSetDoc(docRef, cleanUser, { merge: true });
+  } catch (err) {
+    console.warn(`[Firestore Users] Notice saving ${user.id}:`, err);
+  }
+}
+
+/**
+ * Server-authoritative subscription evaluation:
+ * Validates active vs expired subscriptions using trusted server timestamp.
+ */
+function evaluateUserSubscription(user: User, serverNow = new Date()): {
+  isVip: boolean;
+  subscription: Subscription | null;
+  status: 'active' | 'expired' | 'none';
+  expiryDate?: string;
+  plan: 'monthly' | 'annual' | 'free';
+  userTier: 'VIP' | 'FREE';
+} {
+  const nowMs = serverNow.getTime();
+
+  // Admin users maintain permanent VIP access
+  if (user.role === 'admin') {
+    user.premiumStatus = true;
+    user.subscriptionPlan = 'annual';
+    user.subscriptionExpiry = user.subscriptionExpiry || '2030-12-31T23:59:59Z';
+    return {
+      isVip: true,
+      subscription: subscriptions.find(s => s.userId === user.id) || null,
+      status: 'active',
+      expiryDate: user.subscriptionExpiry,
+      plan: 'annual',
+      userTier: 'VIP'
+    };
+  }
+
+  // Find all subscriptions associated with this user across all possible identifiers
+  const matchingSubs = subscriptions.filter(s => {
+    if (s.userId && s.userId === user.id) return true;
+    if (user.piUsername && s.piUsername && s.piUsername.toLowerCase() === user.piUsername.toLowerCase()) return true;
+    if (user.piUserId && s.piUserId && s.piUserId === user.piUserId) return true;
+    if (s.userId && s.userId.toLowerCase() === user.username.toLowerCase()) return true;
+    if (user.piUsername && s.userId === user.piUsername) return true;
+    if (user.piUserId && s.userId === `usr_pi_${user.piUserId}`) return true;
+    return false;
+  });
+
+  // Evaluate expiration status for each matching subscription based on serverNow
+  for (const s of matchingSubs) {
+    const expiryStr = s.expiresAt || s.expiryDate;
+    if (expiryStr) {
+      const expTime = new Date(expiryStr).getTime();
+      if (!isNaN(expTime)) {
+        if (expTime > nowMs && s.paymentStatus !== 'failed') {
+          s.status = 'active';
+          s.subscriptionStatus = 'active';
+        } else {
+          s.status = 'expired';
+          s.subscriptionStatus = 'expired';
+        }
+      }
+    }
+  }
+
+  // Filter for currently active subscriptions
+  const activeSubs = matchingSubs.filter(s => {
+    const expiryStr = s.expiresAt || s.expiryDate;
+    if (!expiryStr) return false;
+    const expTime = new Date(expiryStr).getTime();
+    return !isNaN(expTime) && expTime > nowMs && s.paymentStatus !== 'failed';
+  });
+
+  if (activeSubs.length > 0) {
+    // Sort by latest expiration date
+    activeSubs.sort((a, b) => {
+      const tA = new Date(a.expiresAt || a.expiryDate).getTime();
+      const tB = new Date(b.expiresAt || b.expiryDate).getTime();
+      return tB - tA;
+    });
+
+    const activeSub = activeSubs[0];
+    const latestExpiry = activeSub.expiresAt || activeSub.expiryDate;
+    const plan = (activeSub.plan === 'annual' || activeSub.durationPurchased === 'yearly') ? 'annual' : 'monthly';
+
+    user.premiumStatus = true;
+    user.subscriptionPlan = plan;
+    user.subscriptionExpiry = latestExpiry;
+
+    // Requirement 12: Expiry reminder notification if expiring within 3 days (72 hours) and not yet notified
+    if (latestExpiry && !activeSub.expiryReminderNotifiedAt) {
+      const expTime = new Date(latestExpiry).getTime();
+      const remainingHours = (expTime - nowMs) / (1000 * 60 * 60);
+      if (remainingHours <= 72 && remainingHours > 0) {
+        activeSub.expiryReminderNotifiedAt = serverNow.toISOString();
+        saveSubscriptionsStore();
+        syncSubscriptionToFirestore(activeSub).catch(() => {});
+        const remNotif: AppNotification = {
+          id: `notif_rem_${activeSub.id}`,
+          userId: user.id,
+          title: '⏰ VIP Subscription Expiring Soon',
+          message: `Your PiFlix+ VIP subscription will expire in ${Math.max(1, Math.ceil(remainingHours / 24))} day(s). Renew early to avoid interruption of premium features.`,
+          type: 'premium',
+          targetTab: 'premium',
+          createdAt: serverNow.toISOString(),
+          read: false,
+          readBy: [],
+          metadata: {
+            plan: activeSub.plan,
+            expiresAt: latestExpiry
+          }
+        };
+        if (!notifications.some(n => n.id === remNotif.id)) {
+          notifications.unshift(remNotif);
+        }
+      }
+    }
+
+    return {
+      isVip: true,
+      subscription: activeSub,
+      status: 'active',
+      expiryDate: latestExpiry,
+      plan,
+      userTier: 'VIP'
+    };
+  }
+
+  // No active subscriptions found; check for expired subscription
+  let latestExpiredSub: Subscription | null = null;
+  if (matchingSubs.length > 0) {
+    matchingSubs.sort((a, b) => {
+      const tA = new Date(a.expiresAt || a.expiryDate || 0).getTime();
+      const tB = new Date(b.expiresAt || b.expiryDate || 0).getTime();
+      return tB - tA;
+    });
+    latestExpiredSub = matchingSubs[0];
+  }
+
+  // Requirement 11: Notify user clearly that their VIP subscription has expired
+  // Store an expiration-notification flag/timestamp so notification is sent/shown only once
+  if (latestExpiredSub && !latestExpiredSub.expirationNotifiedAt) {
+    latestExpiredSub.expirationNotifiedAt = serverNow.toISOString();
+    saveSubscriptionsStore();
+    syncSubscriptionToFirestore(latestExpiredSub).catch(() => {});
+
+    const expNotif: AppNotification = {
+      id: `notif_exp_${latestExpiredSub.id}`,
+      userId: user.id,
+      title: '⚠️ VIP Subscription Expired',
+      message: 'Your PiFlix+ VIP subscription has expired. Your account has been returned to the Free Tier. Renew your VIP subscription to continue enjoying Premium features.',
+      type: 'premium',
+      targetTab: 'premium',
+      createdAt: serverNow.toISOString(),
+      read: false,
+      readBy: [],
+      metadata: {
+        expiredPlan: latestExpiredSub.plan,
+        expiredAt: latestExpiredSub.expiresAt || latestExpiredSub.expiryDate
+      }
+    };
+    if (!notifications.some(n => n.id === expNotif.id)) {
+      notifications.unshift(expNotif);
+    }
+  }
+
+  user.premiumStatus = false;
+  user.subscriptionPlan = 'free';
+  user.subscriptionExpiry = undefined;
+
+  return {
+    isVip: false,
+    subscription: latestExpiredSub,
+    status: latestExpiredSub ? 'expired' : 'none',
+    plan: 'free',
+    userTier: 'FREE'
+  };
+}
+
+/**
+ * Creates or extends a VIP subscription:
+ * - Persists all required metadata
+ * - Automatically extends active memberships instead of overwriting
+ * - Saves to disk and syncs with Firestore
+ */
+function createOrExtendSubscription(params: {
+  userId: string;
+  piUsername?: string;
+  piUserId?: string;
+  plan: 'monthly' | 'annual';
+  pricePi: number;
+  transactionId: string;
+  paymentId?: string;
+  now?: Date;
+}): { subscription: Subscription; user: User } {
+  const now = params.now || new Date();
+
+  const cleanPiUsername = (params.piUsername && !isUuidOrInternalId(params.piUsername))
+    ? params.piUsername.trim()
+    : undefined;
+
+  // Find or register user
+  let user = users.find(u =>
+    (params.userId && u.id === params.userId) ||
+    (params.piUserId && u.piUserId === params.piUserId) ||
+    (cleanPiUsername && u.piUsername?.toLowerCase() === cleanPiUsername.toLowerCase()) ||
+    (cleanPiUsername && u.username.toLowerCase() === cleanPiUsername.toLowerCase())
+  );
+
+  if (!user) {
+    const validUsername = cleanPiUsername || 'Pioneer';
+    user = {
+      id: params.userId || (params.piUserId ? `usr_pi_${params.piUserId}` : `usr_${Date.now()}`),
+      username: validUsername,
+      email: `${validUsername.toLowerCase().replace(/[^a-z0-9]/g, '')}@pioneer.network`,
+      profileImage: getDeterministicEmoji(validUsername !== 'Pioneer' ? validUsername : params.userId),
+      role: 'user',
+      premiumStatus: true,
+      subscriptionPlan: params.plan,
+      piUsername: cleanPiUsername,
+      piUserId: params.piUserId,
+      piWalletAddress: `GD${crypto.createHash('sha256').update(params.piUserId || validUsername || params.userId).digest('hex').substring(0, 8).toUpperCase()}...PI`,
+      createdAt: now.toISOString(),
+      notificationSettings: {
+        newMovies: true,
+        newEpisodes: true,
+        announcements: true,
+        subscription: true
+      }
+    };
+    users.push(user);
+  } else {
+    if (cleanPiUsername) {
+      user.piUsername = cleanPiUsername;
+      user.username = cleanPiUsername;
+      user.email = `${cleanPiUsername.toLowerCase().replace(/[^a-z0-9]/g, '')}@pioneer.network`;
+    }
+    if (params.piUserId) user.piUserId = params.piUserId;
+  }
+
+  // Requirement 7: Multiple purchases / extension logic:
+  // If user has an active VIP subscription whose expiry date is in the future,
+  // extend from that existing expiryDate rather than overwriting it, or keep the longer active expiry.
+  const evalResult = evaluateUserSubscription(user, now);
+  let baseDate = now;
+  if (evalResult.isVip && evalResult.expiryDate) {
+    const existingExpiryTime = new Date(evalResult.expiryDate).getTime();
+    if (existingExpiryTime > now.getTime()) {
+      baseDate = new Date(existingExpiryTime);
+    }
+  }
+
+  const expiry = new Date(baseDate);
+  if (params.plan === 'annual') {
+    // Requirement 6: 365 days / 1 calendar year
+    expiry.setDate(expiry.getDate() + 365);
+  } else {
+    // Requirement 5: 30 days / 1 calendar month
+    expiry.setDate(expiry.getDate() + 30);
+  }
+
+  const subId = `sub_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+  const subPiUsername = (user.piUsername && !isUuidOrInternalId(user.piUsername))
+    ? user.piUsername
+    : cleanPiUsername;
+
+  const subscriptionRecord: Subscription = {
+    id: subId,
+    userId: user.id,
+    piUsername: subPiUsername,
+    piUserId: user.piUserId || params.piUserId,
+    plan: params.plan,
+    pricePi: params.pricePi,
+    transactionId: params.transactionId,
+    paymentId: params.paymentId,
+    paymentStatus: 'completed',
+    status: 'active',
+    subscriptionStatus: 'active',
+    durationPurchased: params.plan === 'annual' ? 'yearly' : 'monthly',
+    purchaseDate: now.toISOString(),
+    startDate: now.toISOString(),
+    startAt: now.toISOString(),
+    expiryDate: expiry.toISOString(),
+    expiresAt: expiry.toISOString(),
+    updatedAt: now.toISOString()
+  };
+
+  subscriptions.unshift(subscriptionRecord);
+  saveSubscriptionsStore();
+
+  user.premiumStatus = true;
+  user.subscriptionPlan = params.plan;
+  user.subscriptionExpiry = expiry.toISOString();
+  saveUsersStore();
+
+  // Non-blocking sync to Firestore
+  syncSubscriptionToFirestore(subscriptionRecord).catch(e => console.warn('[Firestore] sub sync notice:', e));
+  syncUserToFirestore(user).catch(e => console.warn('[Firestore] user sync notice:', e));
+
+  return { subscription: subscriptionRecord, user };
+}
+
+// --------------------------------------------------------------------------
 // VISITOR ANALYTICS PERSISTENT STORE & FIRESTORE SYNCHRONIZATION
 // --------------------------------------------------------------------------
 const VISITORS_STORE_FILE = path.join(DATA_DIR, 'visitors_store.json');
@@ -770,103 +1454,55 @@ function saveVisitorsStore() {
 }
 
 async function syncVisitorToFirestore(record: VisitorRecord) {
+  if (!firestoreDb) return;
   try {
-    const projectId = firebaseConfig.projectId || 'empyrean-patrol-bvxch';
-    const databaseId = firebaseConfig.firestoreDatabaseId || 'ai-studio-piflix-2d1bb7c4-88f0-466a-95d5-c25d95f2c9a6';
-    const docUrl = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/${databaseId}/documents/visitors/${record.visitorId}`;
-    
-    const fields: Record<string, any> = {
-      visitorId: { stringValue: record.visitorId },
-      source: { stringValue: record.source },
-      firstSeen: { stringValue: record.firstSeen },
-      lastSeen: { stringValue: record.lastSeen },
-      visitCount: { integerValue: String(record.visitCount) },
-      visitDates: {
-        arrayValue: {
-          values: (record.visitDates || []).map(d => ({ stringValue: d }))
-        }
-      },
-      createdAt: { stringValue: record.createdAt },
-      updatedAt: { stringValue: record.updatedAt }
+    const docRef = firestoreDoc(firestoreDb, 'visitors', record.visitorId);
+    // Explicitly sanitize record to ensure no unsupported undefined fields are passed to Firestore setDoc
+    const cleanRecord: Record<string, any> = {
+      visitorId: String(record.visitorId),
+      source: record.source || 'public_link',
+      piUserId: record.piUserId || null,
+      piUsername: record.piUsername || null,
+      firstSeen: record.firstSeen || new Date().toISOString(),
+      lastSeen: record.lastSeen || new Date().toISOString(),
+      visitDates: Array.isArray(record.visitDates) ? record.visitDates : [],
+      visitCount: typeof record.visitCount === 'number' ? record.visitCount : 1,
+      createdAt: record.createdAt || new Date().toISOString(),
+      updatedAt: new Date().toISOString()
     };
-    if (record.piUserId) {
-      fields.piUserId = { stringValue: record.piUserId };
-    }
-    if (record.piUsername) {
-      fields.piUsername = { stringValue: record.piUsername };
-    }
-
-    await fetch(docUrl, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ fields })
-    });
+    await firestoreSetDoc(docRef, cleanRecord, { merge: true });
   } catch (err) {
     console.warn(`Firestore visitor sync notice for ${record.visitorId}:`, err);
   }
 }
 
 async function syncLikeToFirestore(like: LikedItem, deleted = false) {
+  if (!firestoreDb) return;
   try {
-    const projectId = firebaseConfig.projectId || 'empyrean-patrol-bvxch';
-    const databaseId = firebaseConfig.firestoreDatabaseId || 'ai-studio-piflix-2d1bb7c4-88f0-466a-95d5-c25d95f2c9a6';
     const docKey = `${like.userId}_${like.contentId}`.replace(/[^a-zA-Z0-9_-]/g, '_');
-    const docUrl = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/${databaseId}/documents/likes/${docKey}`;
-    
+    const docRef = firestoreDoc(firestoreDb, 'likes', docKey);
     if (deleted) {
-      await fetch(docUrl, { method: 'DELETE' });
-      return;
+      await firestoreDeleteDoc(docRef);
+    } else {
+      const cleanLike = JSON.parse(JSON.stringify(like));
+      await firestoreSetDoc(docRef, cleanLike, { merge: true });
     }
-
-    const fields: Record<string, any> = {
-      id: { stringValue: like.id },
-      userId: { stringValue: like.userId },
-      contentId: { stringValue: like.contentId },
-      contentType: { stringValue: like.contentType },
-      likedAt: { stringValue: like.likedAt }
-    };
-
-    await fetch(docUrl, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ fields })
-    });
   } catch (err) {
     console.warn(`Firestore like sync notice for ${like.contentId}:`, err);
   }
 }
 
 async function syncReviewToFirestore(review: ContentRatingReview, deleted = false) {
+  if (!firestoreDb) return;
   try {
-    const projectId = firebaseConfig.projectId || 'empyrean-patrol-bvxch';
-    const databaseId = firebaseConfig.firestoreDatabaseId || 'ai-studio-piflix-2d1bb7c4-88f0-466a-95d5-c25d95f2c9a6';
     const docKey = `${review.id}`.replace(/[^a-zA-Z0-9_-]/g, '_');
-    const docUrl = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/${databaseId}/documents/reviews/${docKey}`;
-    
+    const docRef = firestoreDoc(firestoreDb, 'reviews', docKey);
     if (deleted) {
-      await fetch(docUrl, { method: 'DELETE' });
-      return;
+      await firestoreDeleteDoc(docRef);
+    } else {
+      const cleanReview = JSON.parse(JSON.stringify(review));
+      await firestoreSetDoc(docRef, cleanReview, { merge: true });
     }
-
-    const fields: Record<string, any> = {
-      id: { stringValue: review.id },
-      userId: { stringValue: review.userId },
-      username: { stringValue: review.username },
-      contentId: { stringValue: review.contentId },
-      rating: { integerValue: String(Math.round(review.rating)) },
-      review: { stringValue: review.review || '' },
-      createdAt: { stringValue: review.createdAt },
-      approved: { booleanValue: review.approved !== false }
-    };
-    if (review.userImage) {
-      fields.userImage = { stringValue: review.userImage };
-    }
-
-    await fetch(docUrl, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ fields })
-    });
   } catch (err) {
     console.warn(`Firestore review sync notice for ${review.contentId}:`, err);
   }
@@ -952,514 +1588,465 @@ function computeVisitorAnalytics() {
   };
 }
 
-// Convert a ContentItem into Firestore REST document fields format
-function convertContentItemToFirestoreFields(item: ContentItem) {
-  const fields: Record<string, any> = {
-    id: { stringValue: String(item.id) },
-    title: { stringValue: String(item.title || '') },
-    description: { stringValue: String(item.description || '') },
-    type: { stringValue: item.type === 'series' ? 'series' : 'movie' },
-    coverImageUrl: { stringValue: String(item.coverImageUrl || '') },
-    videoUrl: { stringValue: String(item.videoUrl || '') },
-    trailerUrl: { stringValue: String(item.trailerUrl || '') },
-    year: { integerValue: String(item.year || new Date().getFullYear()) },
-    genre: { stringValue: Array.isArray(item.genre) ? item.genre.join(', ') : String(item.genre || 'General') },
-    language: { stringValue: String(item.language || 'English') },
-    country: { stringValue: String((item as any).country || 'International') },
-    director: { stringValue: String((item as any).director || 'Creator') },
-    rating: { doubleValue: Number(item.rating) || 8.0 },
-    quality: { stringValue: String(item.quality || 'HD') },
-    accessType: { stringValue: item.accessType === 'premium' ? 'premium' : 'free' },
-    published: { booleanValue: Boolean(item.published !== false) },
-    isFeatured: { booleanValue: Boolean((item as any).isFeatured) },
-    isTrending: { booleanValue: Boolean((item as any).isTrending !== undefined ? (item as any).isTrending : true) },
-    createdAt: { stringValue: String(item.createdAt || new Date().toISOString()) },
-    updatedAt: { stringValue: String(item.updatedAt || new Date().toISOString()) }
-  };
+function parseFirestoreDocToContent(id: string, data: any): { movie?: Movie; series?: TVSeries; seasons?: Season[]; episodes?: Episode[] } {
+  const type = data.type || (id.startsWith('s-') ? 'series' : 'movie');
+  const title = data.title || 'Untitled';
+  const description = data.description || '';
+  const coverImageUrl = data.coverImageUrl || data.poster || data.backdrop || '';
+  const videoUrl = data.videoUrl || '';
+  const trailerUrl = data.trailerUrl || '';
+  const year = Number(data.year) || new Date().getFullYear();
+  const genre = Array.isArray(data.genre)
+    ? data.genre
+    : (data.genre ? String(data.genre).split(',').map((s: string) => s.trim()).filter(Boolean) : ['General']);
+  const language = data.language || 'English';
+  const country = data.country || 'International';
+  const director = data.director || 'Creator';
+  const rating = Number(data.rating) || 8.0;
+  const qualityBadge = (data.quality as 'HD' | 'FHD' | '4K') || 'HD';
+  const accessType = (data.accessType as 'free' | 'premium') || 'free';
+  const isPremium = accessType === 'premium';
+  const isPublished = data.published !== false;
+  const isFeatured = Boolean(data.isFeatured);
+  const isTrending = data.isTrending !== undefined ? Boolean(data.isTrending) : true;
+  const createdAt = data.createdAt || new Date().toISOString();
+  const updatedAt = data.updatedAt || new Date().toISOString();
 
-  if (item.duration !== undefined) {
-    fields.duration = { integerValue: String(item.duration) };
-  }
-  if (item.seasonsCount !== undefined) {
-    fields.seasonsCount = { integerValue: String(item.seasonsCount) };
-  }
-
-  if (Array.isArray(item.seasons) && item.seasons.length > 0) {
-    fields.seasons = {
-      arrayValue: {
-        values: item.seasons.map(s => ({
-          mapValue: {
-            fields: {
-              id: { stringValue: String(s.id) },
-              seasonNumber: { integerValue: String(s.seasonNumber) },
-              seasonName: { stringValue: String(s.seasonName || s.title || `Season ${s.seasonNumber}`) },
-              title: { stringValue: String(s.title || s.seasonName || `Season ${s.seasonNumber}`) },
-              episodesCount: { integerValue: String(s.episodesCount || 0) }
-            }
-          }
-        }))
-      }
+  if (type === 'movie') {
+    const movieObj: Movie = {
+      id,
+      title,
+      description,
+      poster: coverImageUrl || 'https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=600&auto=format&fit=crop&q=80',
+      backdrop: coverImageUrl || 'https://images.unsplash.com/photo-1518709268805-4e9042af9f23?w=1600&auto=format&fit=crop&q=80',
+      coverImageUrl,
+      trailerUrl,
+      videoUrl,
+      year,
+      duration: Number(data.duration) || 90,
+      genre,
+      language,
+      country,
+      director,
+      cast: Array.isArray(data.cast) ? data.cast : [],
+      rating,
+      ageClassification: data.ageClassification || 'PG-13',
+      isPremium,
+      accessType,
+      isFeatured,
+      isTrending,
+      isPublished,
+      published: isPublished,
+      qualityBadge,
+      viewsCount: Number(data.viewsCount) || 0,
+      likesCount: Number(data.likesCount) || 0,
+      createdAt,
+      updatedAt
     };
-  }
+    return { movie: movieObj };
+  } else {
+    // TV Series
+    const rawSeasons: any[] = Array.isArray(data.seasons) ? data.seasons : [];
+    const rawEpisodes: any[] = Array.isArray(data.episodes) ? data.episodes : [];
 
-  if (Array.isArray(item.episodes) && item.episodes.length > 0) {
-    fields.episodes = {
-      arrayValue: {
-        values: item.episodes.map(ep => ({
-          mapValue: {
-            fields: {
-              id: { stringValue: String(ep.id) },
-              seasonNumber: { integerValue: String(ep.seasonNumber || 1) },
-              seasonId: { stringValue: String(ep.seasonId || '') },
-              episodeNumber: { integerValue: String(ep.episodeNumber || 1) },
-              title: { stringValue: String(ep.title || '') },
-              description: { stringValue: String(ep.description || '') },
-              thumbnail: { stringValue: String(ep.thumbnail || '') },
-              videoUrl: { stringValue: String(ep.videoUrl || '') },
-              duration: { integerValue: String(ep.duration || 45) },
-              skipIntroSec: { integerValue: String(ep.skipIntroSec || 0) }
-            }
-          }
-        }))
-      }
-    };
-  }
-
-  return fields;
-}
-
-// Persist a ContentItem directly to Firestore via REST API
-async function persistContentItemToFirestore(item: ContentItem): Promise<boolean> {
-  try {
-    const projectId = firebaseConfig.projectId || 'empyrean-patrol-bvxch';
-    const databaseId = firebaseConfig.firestoreDatabaseId || 'ai-studio-piflix-2d1bb7c4-88f0-466a-95d5-c25d95f2c9a6';
-    const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/${databaseId}/documents/content/${encodeURIComponent(item.id)}`;
-
-    const fields = convertContentItemToFirestoreFields(item);
-    const res = await fetch(url, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ fields })
+    const parsedSeasons: Season[] = rawSeasons.map((sf: any, idx: number) => {
+      const sNum = Number(sf.seasonNumber) || (idx + 1);
+      return {
+        id: sf.id || `sn-${id}-${sNum}`,
+        seriesId: id,
+        seasonNumber: sNum,
+        seasonName: sf.seasonName || sf.title || `Season ${sNum}`,
+        title: sf.title || sf.seasonName || `Season ${sNum}`,
+        episodesCount: Number(sf.episodesCount) || rawEpisodes.filter(e => (e.seasonNumber || 1) === sNum || (e.seasonId && e.seasonId === sf.id)).length
+      };
     });
-    if (res.ok) {
-      console.info(`[Firestore Persist] Successfully persisted ${item.id} (${item.title}) to Firestore.`);
-      return true;
-    } else {
-      console.warn(`[Firestore Persist Warning] Status ${res.status} for ${item.id}`);
-      return false;
-    }
+
+    const parsedEpisodes: Episode[] = rawEpisodes.map((ef: any, idx: number) => {
+      const sNum = Number(ef.seasonNumber) || 1;
+      const epNum = Number(ef.episodeNumber) || (idx + 1);
+      return {
+        id: ef.id || `ep-${id}-${idx + 1}`,
+        seriesId: id,
+        seasonId: ef.seasonId || `sn-${id}-${sNum}`,
+        seasonNumber: sNum,
+        seasonName: ef.seasonName || `Season ${sNum}`,
+        episodeNumber: epNum,
+        title: ef.title || `Episode ${epNum}`,
+        description: ef.description || '',
+        thumbnail: ef.thumbnail || coverImageUrl,
+        videoUrl: ef.videoUrl || videoUrl,
+        duration: Number(ef.duration) || 45,
+        skipIntroSec: Number(ef.skipIntroSec) || 0,
+        createdAt
+      };
+    });
+
+    const seriesObj: TVSeries = {
+      id,
+      title,
+      description,
+      poster: coverImageUrl || 'https://images.unsplash.com/photo-1526374965328-7f61d4dc18c5?w=600&auto=format&fit=crop&q=80',
+      backdrop: coverImageUrl || 'https://images.unsplash.com/photo-1550751827-4bd374c3f58b?w=1600&auto=format&fit=crop&q=80',
+      coverImageUrl,
+      trailerUrl,
+      year,
+      genre,
+      language,
+      country,
+      director,
+      cast: Array.isArray(data.cast) ? data.cast : [],
+      rating,
+      ageClassification: data.ageClassification || 'PG-13',
+      isPremium,
+      accessType,
+      isFeatured,
+      isTrending,
+      isPublished,
+      published: isPublished,
+      qualityBadge,
+      viewsCount: Number(data.viewsCount) || 0,
+      likesCount: Number(data.likesCount) || 0,
+      seasonsCount: Math.max(1, parsedSeasons.length, Number(data.seasonsCount) || 1),
+      createdAt,
+      updatedAt
+    };
+
+    return { series: seriesObj, seasons: parsedSeasons, episodes: parsedEpisodes };
+  }
+}
+
+// Persist a ContentItem directly to Firestore via official Firebase SDK
+async function persistContentItemToFirestore(item: ContentItem): Promise<boolean> {
+  if (!firestoreDb) return false;
+  try {
+    const docRef = firestoreDoc(firestoreDb, 'content', String(item.id));
+    const cleanItem = JSON.parse(JSON.stringify(item));
+    await firestoreSetDoc(docRef, cleanItem, { merge: true });
+    console.info(`[Firestore SDK Persist] Successfully persisted ${item.id} (${item.title})`);
+    return true;
   } catch (err) {
-    console.warn(`[Firestore Persist Error] for ${item.id}:`, err);
+    console.error(`[Firestore SDK Persist Error] for ${item.id}:`, err);
     return false;
   }
 }
 
-// Delete a ContentItem permanently from Firestore via REST API
+// Delete a ContentItem permanently from Firestore via official Firebase SDK
 async function deleteContentItemFromFirestore(id: string): Promise<boolean> {
+  if (!firestoreDb) return false;
   try {
-    const projectId = firebaseConfig.projectId || 'empyrean-patrol-bvxch';
-    const databaseId = firebaseConfig.firestoreDatabaseId || 'ai-studio-piflix-2d1bb7c4-88f0-466a-95d5-c25d95f2c9a6';
-    const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/${databaseId}/documents/content/${encodeURIComponent(id)}`;
-
-    const res = await fetch(url, { method: 'DELETE' });
-    if (res.ok) {
-      console.info(`[Firestore Delete] Successfully removed ${id} from Firestore.`);
-      return true;
-    }
-    return false;
+    const docRef = firestoreDoc(firestoreDb, 'content', String(id));
+    await firestoreDeleteDoc(docRef);
+    const delDocRef = firestoreDoc(firestoreDb, 'deleted_items', String(id));
+    await firestoreSetDoc(delDocRef, { id: String(id), deletedAt: new Date().toISOString() }, { merge: true });
+    console.info(`[Firestore SDK Delete] Successfully removed ${id} from Firestore content & added to deleted_items.`);
+    return true;
   } catch (err) {
-    console.warn(`[Firestore Delete Error] for ${id}:`, err);
+    console.error(`[Firestore SDK Delete Error] for ${id}:`, err);
     return false;
   }
+}
+
+// In-memory catalog maps for seamless continuous updates without dropping catalog items
+const catalogMoviesMap = new Map<string, Movie>();
+const catalogSeriesMap = new Map<string, TVSeries>();
+const catalogSeasonsMap = new Map<string, Season>();
+const catalogEpisodesMap = new Map<string, Episode>();
+
+function rebuildCatalogFromMaps() {
+  movies = Array.from(catalogMoviesMap.values()).filter(m => !deletedContentIds.has(m.id));
+  seriesList = Array.from(catalogSeriesMap.values()).filter(s => !deletedContentIds.has(s.id));
+  seasonsList = Array.from(catalogSeasonsMap.values()).filter(sn => !deletedContentIds.has(sn.seriesId));
+  episodesList = Array.from(catalogEpisodesMap.values()).filter(ep => !deletedContentIds.has(ep.seriesId));
+  saveContentStore();
+  recalculateAllMetrics();
 }
 
 async function syncFromProductionFirestore() {
-  const projectId = firebaseConfig.projectId || 'empyrean-patrol-bvxch';
-  const databaseId = firebaseConfig.firestoreDatabaseId || 'ai-studio-piflix-2d1bb7c4-88f0-466a-95d5-c25d95f2c9a6';
-  const firestoreQueryUrl = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/${databaseId}/documents:runQuery`;
+  if (!firestoreDb) {
+    console.warn('[Firestore Sync] Firestore client not initialized, skipping sync.');
+    return;
+  }
 
   try {
-    // 1. Fetch ALL content from production Firestore (both published and drafts)
-    const queryRes = await fetch(firestoreQueryUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        structuredQuery: {
-          from: [{ collectionId: 'content' }]
-        }
-      })
+    // 0. Synchronize permanently deleted item IDs from Firestore registry
+    try {
+      const delSnap = await firestoreGetDocs(firestoreCollection(firestoreDb, 'deleted_items'));
+      if (!delSnap.empty) {
+        delSnap.forEach(d => {
+          deletedContentIds.add(d.id);
+        });
+        console.info(`[Firestore Sync] Synchronized ${delSnap.size} deleted item IDs from Firestore.`);
+      }
+    } catch (delErr) {
+      console.warn('[Firestore Deleted Items Sync Notice]:', delErr);
+    }
+
+    // 1. Prime the catalog maps exclusively with existing disk content (filtered by deletedContentIds)
+    movies.filter(m => !deletedContentIds.has(m.id)).forEach(m => {
+      catalogMoviesMap.set(m.id, { ...(catalogMoviesMap.get(m.id) || {}), ...m });
+    });
+    seriesList.filter(s => !deletedContentIds.has(s.id)).forEach(s => {
+      catalogSeriesMap.set(s.id, { ...(catalogSeriesMap.get(s.id) || {}), ...s });
+    });
+    seasonsList.filter(sn => !deletedContentIds.has(sn.seriesId)).forEach(sn => {
+      catalogSeasonsMap.set(sn.id, { ...(catalogSeasonsMap.get(sn.id) || {}), ...sn });
+    });
+    episodesList.filter(ep => !deletedContentIds.has(ep.seriesId)).forEach(ep => {
+      catalogEpisodesMap.set(ep.id, { ...(catalogEpisodesMap.get(ep.id) || {}), ...ep });
     });
 
-    const firestoreFoundIds = new Set<string>();
+    // 2. Fetch authoritative documents from Firestore content collection
+    const colRef = firestoreCollection(firestoreDb, 'content');
+    const snap = await firestoreGetDocs(colRef);
+    const existingFirestoreDocIds = new Set<string>();
 
-    if (queryRes.ok) {
-      const results: any = await queryRes.json();
-      if (Array.isArray(results)) {
-        let changed = false;
-        for (const item of results) {
-          if (!item.document || !item.document.fields) continue;
-          const fields = item.document.fields;
-          const id = fields.id?.stringValue || item.document.name.split('/').pop();
-          if (!id) continue;
+    if (!snap.empty) {
+      console.info(`[Firestore Sync] Retrieved ${snap.size} authoritative content items from Firestore.`);
 
-          // If item was explicitly deleted by Admin, remove from Firestore
-          if (deletedContentIds.has(id)) {
-            deleteContentItemFromFirestore(id).catch(() => {});
-            continue;
+      snap.forEach(docSnap => {
+        const id = docSnap.id;
+        existingFirestoreDocIds.add(id);
+
+        if (deletedContentIds.has(id)) {
+          deleteContentItemFromFirestore(id).catch(() => {});
+          catalogMoviesMap.delete(id);
+          catalogSeriesMap.delete(id);
+          return;
+        }
+
+        const data = docSnap.data();
+        const parsed = parseFirestoreDocToContent(id, data);
+        if (parsed.movie) {
+          catalogMoviesMap.set(id, parsed.movie);
+        } else if (parsed.series) {
+          catalogSeriesMap.set(id, parsed.series);
+          if (parsed.seasons) {
+            parsed.seasons.forEach(sn => catalogSeasonsMap.set(sn.id, sn));
           }
-
-          firestoreFoundIds.add(id);
-
-          const type = fields.type?.stringValue || (id.startsWith('s-') ? 'series' : 'movie');
-          const title = fields.title?.stringValue || 'Untitled';
-          const description = fields.description?.stringValue || '';
-          const coverImageUrl = fields.coverImageUrl?.stringValue || '';
-          const videoUrl = fields.videoUrl?.stringValue || '';
-          const trailerUrl = fields.trailerUrl?.stringValue || '';
-          const year = Number(fields.year?.integerValue || fields.year?.stringValue || new Date().getFullYear());
-          const genreStr = fields.genre?.stringValue || 'General';
-          const genre = genreStr.split(',').map((s: string) => s.trim()).filter(Boolean);
-          const language = fields.language?.stringValue || 'English';
-          const country = fields.country?.stringValue || 'International';
-          const director = fields.director?.stringValue || 'Creator';
-          const rating = Number(fields.rating?.doubleValue || fields.rating?.integerValue || 8.0);
-          const qualityBadge = (fields.quality?.stringValue as 'HD' | 'FHD' | '4K') || 'HD';
-          const accessType = (fields.accessType?.stringValue as 'free' | 'premium') || 'free';
-          const isPremium = accessType === 'premium';
-          const isPublished = fields.published?.booleanValue !== false;
-          const isFeatured = fields.isFeatured?.booleanValue || false;
-          const isTrending = fields.isTrending?.booleanValue !== undefined ? fields.isTrending.booleanValue : true;
-          const createdAt = fields.createdAt?.stringValue || item.document.createTime || new Date().toISOString();
-          const updatedAt = fields.updatedAt?.stringValue || item.document.updateTime || new Date().toISOString();
-
-          // Episodes
-          const rawEpisodes = fields.episodes?.arrayValue?.values || [];
-          const parsedEpisodes: Episode[] = rawEpisodes.map((ev: any, idx: number) => {
-            const ef = ev.mapValue?.fields || {};
-            const sNum = Number(ef.seasonNumber?.integerValue || 1);
-            const epNum = Number(ef.episodeNumber?.integerValue || idx + 1);
-            return {
-              id: ef.id?.stringValue || `ep-${id}-${idx + 1}`,
-              seriesId: id,
-              seasonId: ef.seasonId?.stringValue || `sn-${id}-${sNum}`,
-              seasonNumber: sNum,
-              seasonName: ef.seasonName?.stringValue || `Season ${sNum}`,
-              episodeNumber: epNum,
-              title: ef.title?.stringValue || `Episode ${epNum}`,
-              description: ef.description?.stringValue || '',
-              thumbnail: ef.thumbnail?.stringValue || coverImageUrl,
-              videoUrl: ef.videoUrl?.stringValue || videoUrl,
-              duration: Number(ef.duration?.integerValue || 45),
-              skipIntroSec: Number(ef.skipIntroSec?.integerValue || 0),
-              createdAt
-            };
-          });
-
-          // Seasons
-          const rawSeasons = fields.seasons?.arrayValue?.values || [];
-          const parsedSeasons: Season[] = rawSeasons.map((sv: any, idx: number) => {
-            const sf = sv.mapValue?.fields || {};
-            const sNum = Number(sf.seasonNumber?.integerValue || idx + 1);
-            return {
-              id: sf.id?.stringValue || `sn-${id}-${sNum}`,
-              seriesId: id,
-              seasonNumber: sNum,
-              seasonName: sf.seasonName?.stringValue || sf.title?.stringValue || `Season ${sNum}`,
-              title: sf.title?.stringValue || sf.seasonName?.stringValue || `Season ${sNum}`,
-              episodesCount: Number(sf.episodesCount?.integerValue || 0)
-            };
-          });
-
-          if (type === 'movie') {
-            const existingIdx = movies.findIndex(m => m.id === id);
-            const movieObj: Movie = {
-              id,
-              title,
-              description,
-              poster: coverImageUrl || 'https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=600&auto=format&fit=crop&q=80',
-              backdrop: coverImageUrl || 'https://images.unsplash.com/photo-1518709268805-4e9042af9f23?w=1600&auto=format&fit=crop&q=80',
-              coverImageUrl,
-              trailerUrl,
-              videoUrl,
-              year,
-              duration: Number(fields.duration?.integerValue || fields.duration?.doubleValue || 90),
-              genre,
-              language,
-              country,
-              director,
-              cast: [],
-              rating,
-              ageClassification: fields.ageClassification?.stringValue || 'PG-13',
-              isPremium,
-              accessType,
-              isFeatured,
-              isTrending,
-              isPublished,
-              published: isPublished,
-              qualityBadge,
-              viewsCount: Number(fields.viewsCount?.integerValue || 0),
-              likesCount: Number(fields.likesCount?.integerValue || 0),
-              createdAt,
-              updatedAt
-            };
-
-            if (existingIdx > -1) {
-              const localMovie = movies[existingIdx];
-              const firestoreTime = new Date(updatedAt).getTime();
-              const localTime = new Date(localMovie.updatedAt || localMovie.createdAt || 0).getTime();
-              if (firestoreTime >= localTime) {
-                movies[existingIdx] = { ...localMovie, ...movieObj };
-                changed = true;
-              } else {
-                // Local version is newer, push to Firestore
-                persistContentItemToFirestore(mapToContentItem(localMovie)).catch(() => {});
-              }
-            } else {
-              movies.unshift(movieObj);
-              changed = true;
-            }
-          } else {
-            // TV Series
-            const existingIdx = seriesList.findIndex(s => s.id === id);
-            const seriesObj: TVSeries = {
-              id,
-              title,
-              description,
-              poster: coverImageUrl || 'https://images.unsplash.com/photo-1526374965328-7f61d4dc18c5?w=600&auto=format&fit=crop&q=80',
-              backdrop: coverImageUrl || 'https://images.unsplash.com/photo-1550751827-4bd374c3f58b?w=1600&auto=format&fit=crop&q=80',
-              coverImageUrl,
-              trailerUrl,
-              year,
-              genre,
-              language,
-              country,
-              director,
-              cast: [],
-              rating,
-              ageClassification: fields.ageClassification?.stringValue || 'PG-13',
-              isPremium,
-              accessType,
-              isFeatured,
-              isTrending,
-              isPublished,
-              published: isPublished,
-              qualityBadge,
-              viewsCount: Number(fields.viewsCount?.integerValue || 0),
-              likesCount: Number(fields.likesCount?.integerValue || 0),
-              seasonsCount: Math.max(1, parsedSeasons.length, Number(fields.seasonsCount?.integerValue || 1)),
-              createdAt,
-              updatedAt
-            };
-
-            if (existingIdx > -1) {
-              const localSeries = seriesList[existingIdx];
-              const firestoreTime = new Date(updatedAt).getTime();
-              const localTime = new Date(localSeries.updatedAt || localSeries.createdAt || 0).getTime();
-              if (firestoreTime >= localTime) {
-                seriesList[existingIdx] = { ...localSeries, ...seriesObj };
-                if (parsedSeasons.length > 0) {
-                  seasonsList = seasonsList.filter(sn => sn.seriesId !== id);
-                  parsedSeasons.forEach(sn => seasonsList.push(sn));
-                }
-                if (parsedEpisodes.length > 0) {
-                  episodesList = episodesList.filter(e => e.seriesId !== id);
-                  parsedEpisodes.forEach(ep => episodesList.push(ep));
-                }
-                changed = true;
-              } else {
-                persistContentItemToFirestore(mapToContentItem(localSeries)).catch(() => {});
-              }
-            } else {
-              seriesList.unshift(seriesObj);
-              if (parsedSeasons.length > 0) {
-                parsedSeasons.forEach(sn => seasonsList.push(sn));
-              }
-              if (parsedEpisodes.length > 0) {
-                parsedEpisodes.forEach(ep => episodesList.push(ep));
-              }
-              changed = true;
-            }
+          if (parsed.episodes) {
+            parsed.episodes.forEach(ep => catalogEpisodesMap.set(ep.id, ep));
           }
         }
-        if (changed) {
-          saveContentStore();
-          console.info(`[Firestore Sync] Synchronized item(s) from production Firestore.`);
-        }
-      }
+      });
     }
 
-    // Bidirectional sync: Push any local items not yet in Firestore to Firestore
-    for (const movie of movies) {
-      if (!deletedContentIds.has(movie.id) && !firestoreFoundIds.has(movie.id)) {
-        await persistContentItemToFirestore(mapToContentItem(movie));
-      }
-    }
-    for (const series of seriesList) {
-      if (!deletedContentIds.has(series.id) && !firestoreFoundIds.has(series.id)) {
-        await persistContentItemToFirestore(mapToContentItem(series));
-      }
-    }
+    rebuildCatalogFromMaps();
+    console.info(`[Firestore Sync] Complete catalog active: ${movies.length} movies, ${seriesList.length} series, ${seasonsList.length} seasons, ${episodesList.length} episodes.`);
 
-    // 2. Fetch Settings from Firestore
-    const settingsDocUrl = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/${databaseId}/documents/settings/app`;
-    const settingsRes = await fetch(settingsDocUrl);
-    if (settingsRes.ok) {
-      const docData: any = await settingsRes.json();
-      if (docData.fields) {
-        const sf = docData.fields;
-        const loadedSettings: Partial<AppSettings> = {};
-        if (sf.appName?.stringValue) loadedSettings.appName = sf.appName.stringValue;
-        if (sf.tagline?.stringValue) loadedSettings.tagline = sf.tagline.stringValue;
-        if (sf.monthlyPricePi?.doubleValue !== undefined) loadedSettings.monthlyPricePi = Number(sf.monthlyPricePi.doubleValue);
-        else if (sf.monthlyPricePi?.integerValue !== undefined) loadedSettings.monthlyPricePi = Number(sf.monthlyPricePi.integerValue);
-        if (sf.annualPricePi?.doubleValue !== undefined) loadedSettings.annualPricePi = Number(sf.annualPricePi.doubleValue);
-        else if (sf.annualPricePi?.integerValue !== undefined) loadedSettings.annualPricePi = Number(sf.annualPricePi.integerValue);
-        if (sf.freeViewingDurationMinutes?.integerValue) loadedSettings.freeViewingDurationMinutes = Number(sf.freeViewingDurationMinutes.integerValue);
-        if (sf.adIntervalMinutes?.integerValue) loadedSettings.adIntervalMinutes = Number(sf.adIntervalMinutes.integerValue);
-        if (sf.enableAds?.booleanValue !== undefined) loadedSettings.enableAds = Boolean(sf.enableAds.booleanValue);
-        if (sf.contactEmail?.stringValue) loadedSettings.contactEmail = sf.contactEmail.stringValue;
-        if (sf.announcement?.stringValue) loadedSettings.announcement = sf.announcement.stringValue;
-        if (sf.termsContent?.stringValue) loadedSettings.termsContent = sf.termsContent.stringValue;
-        if (sf.privacyContent?.stringValue) loadedSettings.privacyContent = sf.privacyContent.stringValue;
-        if (sf.dmcaContent?.stringValue) loadedSettings.dmcaContent = sf.dmcaContent.stringValue;
-
-        appSettings = { ...appSettings, ...loadedSettings };
+    // 4. Fetch Settings from Firestore
+    try {
+      const settingsDocSnap = await firestoreGetDoc(firestoreDoc(firestoreDb, 'settings', 'app'));
+      if (settingsDocSnap.exists()) {
+        const loaded = settingsDocSnap.data() as Partial<AppSettings>;
+        appSettings = { ...appSettings, ...loaded };
         saveSettingsStore();
         console.info(`[Firestore Sync] Synchronized AppSettings from production Firestore.`);
       }
+    } catch (setErr) {
+      console.warn('[Firestore Settings Sync Notice]:', setErr);
     }
 
-    // 3. Fetch Visitors from production Firestore
-    const visitorsQueryRes = await fetch(firestoreQueryUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        structuredQuery: {
-          from: [{ collectionId: 'visitors' }]
-        }
-      })
-    });
-    if (visitorsQueryRes.ok) {
-      const visitorsList: any[] = await visitorsQueryRes.json();
-      let importedCount = 0;
-      for (const item of visitorsList) {
-        if (!item.document || !item.document.fields) continue;
-        const fields = item.document.fields;
-        const visitorId = fields.visitorId?.stringValue;
-        if (!visitorId) continue;
-        const source = fields.source?.stringValue || 'external_web';
-        const piUserId = fields.piUserId?.stringValue;
-        const piUsername = fields.piUsername?.stringValue;
-        const firstSeen = fields.firstSeen?.stringValue || new Date().toISOString();
-        const lastSeen = fields.lastSeen?.stringValue || new Date().toISOString();
-        const visitCount = parseInt(fields.visitCount?.integerValue || '1', 10);
-        const visitDates = fields.visitDates?.arrayValue?.values
-          ? fields.visitDates.arrayValue.values.map((v: any) => v.stringValue).filter(Boolean)
-          : [lastSeen.substring(0, 10)];
-
-        const existing = visitorsStore.get(visitorId);
-        if (!existing) {
-          visitorsStore.set(visitorId, {
-            visitorId,
-            source: (source === 'pi_browser' ? 'pi_browser' : 'external_web'),
-            piUserId,
-            piUsername,
-            firstSeen,
-            lastSeen,
-            visitDates,
-            visitCount,
-            createdAt: fields.createdAt?.stringValue || firstSeen,
-            updatedAt: fields.updatedAt?.stringValue || lastSeen
-          });
-          importedCount++;
-        }
-      }
-      if (importedCount > 0) {
-        saveVisitorsStore();
-        console.info(`[Firestore Sync] Synchronized ${importedCount} visitors from production Firestore.`);
-      }
-    }
-
-    // 4. Fetch Likes from production Firestore
-    const likesQueryRes = await fetch(firestoreQueryUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        structuredQuery: {
-          from: [{ collectionId: 'likes' }]
-        }
-      })
-    });
-    if (likesQueryRes.ok) {
-      const likesList: any[] = await likesQueryRes.json();
-      let importedLikes = 0;
-      for (const item of likesList) {
-        if (!item.document || !item.document.fields) continue;
-        const fields = item.document.fields;
-        const id = fields.id?.stringValue;
-        const userId = fields.userId?.stringValue;
-        const contentId = fields.contentId?.stringValue;
-        const contentType = fields.contentType?.stringValue || 'movie';
-        const likedAt = fields.likedAt?.stringValue || new Date().toISOString();
-
-        if (id && userId && contentId) {
-          const exists = likedItems.some(l => l.userId === userId && l.contentId === contentId);
-          if (!exists) {
-            likedItems.push({ id, userId, contentId, contentType: contentType as any, likedAt });
-            importedLikes++;
+    // 5. Fetch Visitors from Firestore
+    try {
+      const visitorsSnap = await firestoreGetDocs(firestoreCollection(firestoreDb, 'visitors'));
+      if (!visitorsSnap.empty) {
+        let importedCount = 0;
+        visitorsSnap.forEach(docSnap => {
+          const v = docSnap.data() as VisitorRecord;
+          if (v && v.visitorId && !visitorsStore.has(v.visitorId)) {
+            visitorsStore.set(v.visitorId, v);
+            importedCount++;
           }
+        });
+        if (importedCount > 0) {
+          saveVisitorsStore();
+          console.info(`[Firestore Sync] Synchronized ${importedCount} visitors from production Firestore.`);
         }
       }
-      if (importedLikes > 0) {
-        saveInteractionsStore();
-        console.info(`[Firestore Sync] Synchronized ${importedLikes} likes from production Firestore.`);
-      }
+    } catch (visErr) {
+      console.warn('[Firestore Visitors Sync Notice]:', visErr);
     }
 
-    // 5. Fetch Reviews from production Firestore
-    const reviewsQueryRes = await fetch(firestoreQueryUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        structuredQuery: {
-          from: [{ collectionId: 'reviews' }]
-        }
-      })
-    });
-    if (reviewsQueryRes.ok) {
-      const reviewsList: any[] = await reviewsQueryRes.json();
-      let importedReviews = 0;
-      for (const item of reviewsList) {
-        if (!item.document || !item.document.fields) continue;
-        const fields = item.document.fields;
-        const id = fields.id?.stringValue;
-        const userId = fields.userId?.stringValue;
-        const contentId = fields.contentId?.stringValue;
-        const username = fields.username?.stringValue || 'Pioneer';
-        const userImage = fields.userImage?.stringValue;
-        const rating = fields.rating?.integerValue ? Number(fields.rating.integerValue) : (fields.rating?.doubleValue ? Number(fields.rating.doubleValue) : 8);
-        const reviewText = fields.review?.stringValue || '';
-        const createdAt = fields.createdAt?.stringValue || new Date().toISOString();
-        const approved = fields.approved?.booleanValue !== false;
-
-        if (id && userId && contentId) {
-          const idx = reviews.findIndex(r => r.id === id || (r.userId === userId && r.contentId === contentId));
-          if (idx >= 0) {
-            reviews[idx] = { id, userId, username, userImage, contentId, rating, review: reviewText, createdAt, approved };
-          } else {
-            reviews.unshift({ id, userId, username, userImage, contentId, rating, review: reviewText, createdAt, approved });
-            importedReviews++;
+    // 6. Fetch Likes from Firestore
+    try {
+      const likesSnap = await firestoreGetDocs(firestoreCollection(firestoreDb, 'likes'));
+      if (!likesSnap.empty) {
+        let importedLikes = 0;
+        likesSnap.forEach(docSnap => {
+          const l = docSnap.data() as LikedItem;
+          if (l && l.userId && l.contentId) {
+            const exists = likedItems.some(item => item.userId === l.userId && item.contentId === l.contentId);
+            if (!exists) {
+              likedItems.push(l);
+              importedLikes++;
+            }
           }
+        });
+        if (importedLikes > 0) {
+          saveInteractionsStore();
+          console.info(`[Firestore Sync] Synchronized ${importedLikes} likes from production Firestore.`);
         }
       }
-      if (importedReviews > 0) {
-        saveInteractionsStore();
-        console.info(`[Firestore Sync] Synchronized ${importedReviews} reviews from production Firestore.`);
-      }
+    } catch (lkErr) {
+      console.warn('[Firestore Likes Sync Notice]:', lkErr);
     }
 
-    // Recalculate movie and series metrics with latest data
+    // 7. Fetch Reviews from Firestore
+    try {
+      const reviewsSnap = await firestoreGetDocs(firestoreCollection(firestoreDb, 'reviews'));
+      if (!reviewsSnap.empty) {
+        let importedReviews = 0;
+        reviewsSnap.forEach(docSnap => {
+          const r = docSnap.data() as ContentRatingReview;
+          if (r && r.id && r.userId && r.contentId) {
+            const idx = reviews.findIndex(item => item.id === r.id || (item.userId === r.userId && item.contentId === r.contentId));
+            if (idx >= 0) {
+              reviews[idx] = { ...reviews[idx], ...r };
+            } else {
+              reviews.unshift(r);
+              importedReviews++;
+            }
+          }
+        });
+        if (importedReviews > 0) {
+          saveInteractionsStore();
+          console.info(`[Firestore Sync] Synchronized ${importedReviews} reviews from production Firestore.`);
+        }
+      }
+    } catch (revErr) {
+      console.warn('[Firestore Reviews Sync Notice]:', revErr);
+    }
+
+    // Recalculate metrics
     recalculateAllMetrics();
+
+    // 8. Set up real-time listener for Firestore content collection
+    try {
+      firestoreOnSnapshot(firestoreCollection(firestoreDb, 'content'), (snapshot) => {
+        snapshot.forEach(docSnap => {
+          const id = docSnap.id;
+          if (deletedContentIds.has(id)) {
+            catalogMoviesMap.delete(id);
+            catalogSeriesMap.delete(id);
+            return;
+          }
+          const data = docSnap.data();
+          const parsed = parseFirestoreDocToContent(id, data);
+          if (parsed.movie) {
+            catalogMoviesMap.set(id, parsed.movie);
+          } else if (parsed.series) {
+            catalogSeriesMap.set(id, parsed.series);
+            if (parsed.seasons) {
+              parsed.seasons.forEach(sn => catalogSeasonsMap.set(sn.id, sn));
+            }
+            if (parsed.episodes) {
+              parsed.episodes.forEach(ep => catalogEpisodesMap.set(ep.id, ep));
+            }
+          }
+        });
+
+        rebuildCatalogFromMaps();
+      }, (err) => {
+        console.warn('[Firestore onSnapshot Content Notice]:', err);
+      });
+    } catch (listenErr) {
+      console.warn('[Firestore onSnapshot Init Notice]:', listenErr);
+    }
+
+    // 9. Set up real-time listener for Firestore deleted_items collection to immediately purge deleted items
+    try {
+      firestoreOnSnapshot(firestoreCollection(firestoreDb, 'deleted_items'), (snapshot) => {
+        let changed = false;
+        snapshot.forEach(docSnap => {
+          const id = docSnap.id;
+          if (!deletedContentIds.has(id)) {
+            deletedContentIds.add(id);
+            catalogMoviesMap.delete(id);
+            catalogSeriesMap.delete(id);
+            changed = true;
+          }
+        });
+        if (changed) {
+          rebuildCatalogFromMaps();
+        }
+      }, (err) => {
+        console.warn('[Firestore onSnapshot deleted_items Notice]:', err);
+      });
+    } catch (delListenErr) {
+      console.warn('[Firestore onSnapshot deleted_items Init Notice]:', delListenErr);
+    }
+
+    // 10. Fetch Subscriptions from Firestore
+    try {
+      const subsSnap = await firestoreGetDocs(firestoreCollection(firestoreDb, 'subscriptions'));
+      if (!subsSnap.empty) {
+        let importedSubs = 0;
+        subsSnap.forEach(docSnap => {
+          const s = docSnap.data() as Subscription;
+          if (s && s.id && (s.userId || s.piUsername)) {
+            const idx = subscriptions.findIndex(item => item.id === s.id || (item.transactionId && item.transactionId === s.transactionId));
+            if (idx >= 0) {
+              subscriptions[idx] = { ...subscriptions[idx], ...s };
+            } else {
+              subscriptions.unshift(s);
+              importedSubs++;
+            }
+          }
+        });
+        if (importedSubs > 0) {
+          saveSubscriptionsStore();
+          console.info(`[Firestore Sync] Synchronized ${importedSubs} subscriptions from production Firestore.`);
+          // Re-evaluate user subscriptions with newly fetched records
+          for (const u of users) {
+            evaluateUserSubscription(u);
+          }
+          saveUsersStore();
+        }
+      }
+    } catch (subErr) {
+      console.warn('[Firestore Subscriptions Sync Notice]:', subErr);
+    }
+
+    // 11. Fetch and listen to active Published Release from Firestore
+    try {
+      const releaseSnap = await firestoreGetDoc(firestoreDoc(firestoreDb, 'releases', 'current'));
+      if (releaseSnap.exists()) {
+        const remoteRelease = releaseSnap.data() as PublishedRelease;
+        if (remoteRelease && remoteRelease.releaseId && Array.isArray(remoteRelease.movies)) {
+          if (!activeRelease || (remoteRelease.revision || 0) >= (activeRelease.revision || 0)) {
+            remoteRelease.movies = remoteRelease.movies.filter(m => !deletedContentIds.has(m.id));
+            remoteRelease.series = remoteRelease.series.filter(s => !deletedContentIds.has(s.id));
+            activeRelease = remoteRelease;
+            savePublishedReleaseStore();
+            console.info(`[Firestore Sync] Adopted authoritative published release ${activeRelease.releaseId} (Rev ${activeRelease.revision}) from Firestore.`);
+          }
+        }
+      }
+    } catch (relErr) {
+      console.warn('[Firestore Release Sync Notice]:', relErr);
+    }
+
+    try {
+      firestoreOnSnapshot(firestoreDoc(firestoreDb, 'releases', 'current'), (docSnap) => {
+        if (docSnap.exists()) {
+          const remoteRelease = docSnap.data() as PublishedRelease;
+          if (remoteRelease && remoteRelease.releaseId && Array.isArray(remoteRelease.movies)) {
+            if (!activeRelease || (remoteRelease.revision || 0) > (activeRelease.revision || 0)) {
+              remoteRelease.movies = remoteRelease.movies.filter(m => !deletedContentIds.has(m.id));
+              remoteRelease.series = remoteRelease.series.filter(s => !deletedContentIds.has(s.id));
+              activeRelease = remoteRelease;
+              savePublishedReleaseStore();
+              console.info(`[Firestore onSnapshot] Live updated active release to ${activeRelease.releaseId} (Rev ${activeRelease.revision}).`);
+            }
+          }
+        }
+      }, (err) => {
+        console.warn('[Firestore onSnapshot releases/current Notice]:', err);
+      });
+    } catch (onRelErr) {
+      console.warn('[Firestore onSnapshot releases/current Init Notice]:', onRelErr);
+    }
+
   } catch (syncErr) {
     console.warn('[Firestore Sync] Non-blocking initial Firestore sync notice:', syncErr);
   }
@@ -1469,56 +2056,21 @@ async function syncFromProductionFirestore() {
 appSettings = loadSettingsStore();
 loadInteractionsStore();
 loadContentStore();
+loadPublishedReleaseStore();
 recalculateAllMetrics();
 loadVisitorsStore();
+users = loadUsersStore();
+subscriptions = loadSubscriptionsStore();
+payments = loadPaymentsStore();
+
+// Evaluate and sync VIP status for all loaded users against server time
+for (const u of users) {
+  evaluateUserSubscription(u);
+}
+saveUsersStore();
+
 // Kick off non-blocking background synchronization with Firestore
 syncFromProductionFirestore();
-
-let subscriptions: Subscription[] = [
-  {
-    id: 'sub-admin',
-    userId: 'usr_admin',
-    plan: 'annual',
-    pricePi: 29.99,
-    transactionId: 'TX_PI_ADMIN_ANNUAL_001',
-    status: 'active',
-    startDate: '2025-01-01T00:00:00Z',
-    expiryDate: '2026-12-31T23:59:59Z'
-  }
-];
-let payments: PaymentRecord[] = [
-  {
-    id: 'pay-001',
-    userId: 'usr_admin',
-    transactionId: 'TX_PI_ADMIN_ANNUAL_001',
-    amount: 29.99,
-    currency: 'Pi',
-    status: 'completed',
-    plan: 'annual',
-    createdAt: '2025-01-01T00:00:00Z'
-  }
-];
-let notifications: AppNotification[] = [
-  {
-    id: 'notif-1',
-    userId: 'all',
-    title: 'New Release: The Pi Syndicate',
-    message: 'Stream Season 1 & 2 of the groundbreaking crypto thriller now on PiFlix+.',
-    type: 'new_episode',
-    contentId: 's-pi-syndicate',
-    createdAt: new Date(Date.now() - 7200000).toISOString(),
-    read: false
-  },
-  {
-    id: 'notif-2',
-    userId: 'all',
-    title: 'Special Pi Pioneer Upgrade',
-    message: 'Unlock unlimited ad-free streaming for only 3.14 Pi per month.',
-    type: 'premium',
-    createdAt: new Date(Date.now() - 86400000).toISOString(),
-    read: false
-  }
-];
 
 let adImpressionsCount = 1420;
 
@@ -1527,6 +2079,52 @@ let adImpressionsCount = 1420;
 // Health check
 app.get('/api/health', (req: Request, res: Response) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+// AUTHORITATIVE PUBLISHED RELEASE ENDPOINTS (Requirements 1, 2, 3, 4, 5, 6, 7)
+// Guarantees both Public Web and Pi Network (apppiflixfat9963.pinet.com) read the exact same snapshot
+app.get('/api/release/current', (_req: Request, res: Response) => {
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate, max-age=0');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+
+  if (!activeRelease) {
+    activeRelease = publishAuthoritativeRelease('System Initialization');
+  }
+
+  // Filter out any newly recorded deletedContentIds
+  const safeMovies = activeRelease.movies.filter(m => !deletedContentIds.has(m.id));
+  const safeSeries = activeRelease.series.filter(s => !deletedContentIds.has(s.id));
+  const safeRelease: PublishedRelease = {
+    ...activeRelease,
+    movies: safeMovies,
+    series: safeSeries,
+    deletedContentIds: Array.from(deletedContentIds),
+    counts: {
+      movies: safeMovies.length,
+      series: safeSeries.length,
+      seasons: activeRelease.seasons?.length || 0,
+      episodes: activeRelease.episodes?.length || 0
+    }
+  };
+
+  res.json({ success: true, release: safeRelease });
+});
+
+// Admin action to publish authoritative release snapshot
+app.post('/api/admin/publish', verifyAdmin, (req: Request, res: Response) => {
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate, max-age=0');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+
+  const publishedBy = (req as any).adminUser?.email || (req as any).user?.username || req.body?.publishedBy || 'Admin';
+  const newRelease = publishAuthoritativeRelease(publishedBy);
+
+  res.json({
+    success: true,
+    message: `Authoritative release ${newRelease.releaseId} (Revision ${newRelease.revision}) published successfully`,
+    release: newRelease
+  });
 });
 
 // Settings
@@ -1611,10 +2209,16 @@ app.post('/api/auth/login', (req: Request, res: Response) => {
     users.push(user);
   }
 
+  const subEval = evaluateUserSubscription(user, new Date());
+  saveUsersStore();
+
   res.json({
     success: true,
     token: 'jwt_user_session_token_' + user.id,
-    user
+    user,
+    subscription: subEval.subscription,
+    userTier: subEval.userTier,
+    serverTime: new Date().toISOString()
   });
 });
 
@@ -1649,10 +2253,15 @@ app.post('/api/auth/register', (req: Request, res: Response) => {
   };
 
   users.push(newUser);
+  saveUsersStore();
+  syncUserToFirestore(newUser).catch(() => {});
+
   res.json({
     success: true,
     token: 'jwt_user_session_token_' + newUser.id,
-    user: newUser
+    user: newUser,
+    userTier: 'FREE',
+    serverTime: new Date().toISOString()
   });
 });
 
@@ -1709,33 +2318,57 @@ app.post(['/api/auth/pi', '/api/auth/pi/verify'], async (req: Request, res: Resp
       return res.status(400).json({ success: false, error: 'Invalid user payload received from Pi Network.' });
     }
 
-    const piUid = String(piUserData.uid || '').trim();
-    const piUsername = String(piUserData.username || `pioneer_${piUid.slice(0, 6)}`).trim();
+    const piUid = String(piUserData.uid || req.body?.authResult?.user?.uid || req.body?.uid || '').trim();
 
-    // Find existing user or register new Pioneer
+    // Check all potential sources for the authentic Pi Username, strictly filtering out any internal UUIDs
+    const usernameCandidates = [
+      piUserData.username,
+      req.body?.authResult?.user?.username,
+      req.body?.username,
+      req.body?.piUsername
+    ];
+    let piUsername = '';
+    for (const c of usernameCandidates) {
+      if (typeof c === 'string' && c.trim() && !isUuidOrInternalId(c)) {
+        piUsername = c.trim();
+        break;
+      }
+    }
+
+    // Match existing user primarily by UID or authentic Pi username
     let user = users.find(u =>
-      (u.piUsername && u.piUsername.toLowerCase() === piUsername.toLowerCase()) ||
+      (piUid && u.piUserId === piUid) ||
       u.id === `usr_pi_${piUid}` ||
-      u.username.toLowerCase() === piUsername.toLowerCase()
+      (piUsername && u.piUsername && u.piUsername.toLowerCase() === piUsername.toLowerCase()) ||
+      (piUsername && u.username.toLowerCase() === piUsername.toLowerCase())
     );
 
     if (user) {
-      // Update session information
-      user.piUsername = piUsername;
+      // Update session information with genuine Pi Username
+      if (piUsername) {
+        user.piUsername = piUsername;
+        user.username = piUsername;
+        user.email = `${piUsername.toLowerCase().replace(/[^a-z0-9]/g, '')}@pioneer.network`;
+      }
+      if (piUid) {
+        user.piUserId = piUid;
+      }
       if (!user.profileImage || user.profileImage.includes('unsplash') || user.profileImage.includes('dicebear') || user.profileImage.includes('bottts')) {
-        user.profileImage = getDeterministicEmoji(piUsername);
+        user.profileImage = getDeterministicEmoji(piUsername || user.username);
       }
     } else {
+      const validDisplayName = piUsername || 'Pioneer';
       user = {
         id: `usr_pi_${piUid || Date.now()}`,
-        username: piUsername,
-        email: `${piUsername.toLowerCase().replace(/[^a-z0-9]/g, '')}@pioneer.network`,
-        profileImage: getDeterministicEmoji(piUsername),
+        username: validDisplayName,
+        email: `${(piUsername || 'pioneer').toLowerCase().replace(/[^a-z0-9]/g, '')}@pioneer.network`,
+        profileImage: getDeterministicEmoji(validDisplayName),
         role: 'user',
         premiumStatus: false,
         subscriptionPlan: 'free',
-        piUsername: piUsername,
-        piWalletAddress: `GD${crypto.createHash('sha256').update(piUid || piUsername).digest('hex').substring(0, 8).toUpperCase()}...PI`,
+        piUsername: piUsername || undefined,
+        piUserId: piUid || undefined,
+        piWalletAddress: `GD${crypto.createHash('sha256').update(piUid || validDisplayName).digest('hex').substring(0, 8).toUpperCase()}...PI`,
         createdAt: new Date().toISOString(),
         notificationSettings: {
           newMovies: true,
@@ -1747,15 +2380,44 @@ app.post(['/api/auth/pi', '/api/auth/pi/verify'], async (req: Request, res: Resp
       users.push(user);
     }
 
+    // Update any historical subscription records for this user that mistakenly stored a UUID as piUsername
+    if (piUsername) {
+      let subUpdated = false;
+      for (const s of subscriptions) {
+        if (
+          (s.userId === user.id || (piUid && s.piUserId === piUid)) &&
+          (!s.piUsername || isUuidOrInternalId(s.piUsername))
+        ) {
+          s.piUsername = piUsername;
+          subUpdated = true;
+        }
+      }
+      if (subUpdated) {
+        saveSubscriptionsStore();
+        for (const s of subscriptions) {
+          if (s.userId === user.id) syncSubscriptionToFirestore(s).catch(() => {});
+        }
+      }
+    }
+
+    // Evaluate subscription from persistent data and validate against server time
+    const subEval = evaluateUserSubscription(user, new Date());
+    saveUsersStore();
+    syncUserToFirestore(user).catch(() => {});
+
     const sessionToken = `jwt_pi_session_${user.id}_${Date.now()}`;
 
     return res.json({
       success: true,
       token: sessionToken,
       user,
+      subscription: subEval.subscription,
+      userTier: subEval.userTier,
+      subscriptionStatus: subEval.status,
+      serverTime: new Date().toISOString(),
       piUser: {
         uid: piUid,
-        username: piUsername,
+        username: piUsername || user.username,
         roles: piUserData.roles || []
       }
     });
@@ -2252,18 +2914,34 @@ function mapToContentItem(item: Movie | TVSeries): ContentItem {
 }
 
 // GET all content items with filtering & search
+// Canonical Published Release synchronization (Requirements 1, 2, 3, 4, 5, 6)
 app.get('/api/content', (req: Request, res: Response) => {
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate, max-age=0');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+
   const { type, search, genre, language, publishedOnly, accessType, quality } = req.query;
 
-  let allItems: ContentItem[] = [
-    ...movies.map(mapToContentItem),
-    ...seriesList.map(mapToContentItem)
-  ];
+  let baseMovies: Movie[];
+  let baseSeries: TVSeries[];
 
-  // Published filter
-  if (publishedOnly === 'true') {
-    allItems = allItems.filter(i => i.published);
+  // When requesting published content and activeRelease is set, strictly use the authoritative published release!
+  if (publishedOnly !== 'false' && activeRelease) {
+    baseMovies = activeRelease.movies.filter(m => !deletedContentIds.has(m.id));
+    baseSeries = activeRelease.series.filter(s => !deletedContentIds.has(s.id));
+  } else {
+    baseMovies = movies.filter(m => !deletedContentIds.has(m.id));
+    baseSeries = seriesList.filter(s => !deletedContentIds.has(s.id));
+    if (publishedOnly === 'true') {
+      baseMovies = baseMovies.filter(m => m.isPublished !== false && m.published !== false);
+      baseSeries = baseSeries.filter(s => s.isPublished !== false && s.published !== false);
+    }
   }
+
+  let allItems: ContentItem[] = [
+    ...baseMovies.map(mapToContentItem),
+    ...baseSeries.map(mapToContentItem)
+  ];
 
   // Type filter
   if (type && type !== 'all') {
@@ -2563,7 +3241,9 @@ app.put('/api/content/:id', verifyAdmin, (req: Request, res: Response) => {
     };
 
     movies[movieIdx] = updatedMovie;
+    catalogMoviesMap.set(id, updatedMovie);
     saveContentStore();
+    syncActiveReleaseState();
 
     // Persist authoritative update to Firestore
     persistContentItemToFirestore(mapToContentItem(updatedMovie)).catch(err => {
@@ -2609,6 +3289,7 @@ app.put('/api/content/:id', verifyAdmin, (req: Request, res: Response) => {
     };
 
     seriesList[seriesIdx] = updatedSeries;
+    catalogSeriesMap.set(id, updatedSeries);
 
     // Safe merge of seasons
     const rawSeasons = Array.isArray(req.body.seasons) ? req.body.seasons : [];
@@ -2697,6 +3378,7 @@ app.put('/api/content/:id', verifyAdmin, (req: Request, res: Response) => {
     updatedSeries.seasonsCount = Math.max(1, seasonsList.filter(s => s.seriesId === id).length);
 
     saveContentStore();
+    syncActiveReleaseState();
 
     // Persist authoritative update to Firestore
     persistContentItemToFirestore(mapToContentItem(updatedSeries)).catch(err => {
@@ -2706,7 +3388,96 @@ app.put('/api/content/:id', verifyAdmin, (req: Request, res: Response) => {
     return res.json({ success: true, content: mapToContentItem(updatedSeries) });
   }
 
-  return res.status(404).json({ error: 'Content item not found' });
+  // If item wasn't in memory lists, dynamically create it to guarantee zero 404s and 100% save success
+  const isSeries = req.body.type === 'series' || id.startsWith('s-');
+  const genreArray = Array.isArray(req.body.genre) 
+    ? req.body.genre 
+    : (req.body.genre ? String(req.body.genre).split(',').map((s: string) => s.trim()) : ['General']);
+  const isPremium = req.body.accessType === 'premium';
+  deletedContentIds.delete(id);
+
+  if (!isSeries) {
+    const newMovie: Movie = {
+      id,
+      title: req.body.title ? String(req.body.title).trim() : 'Untitled Movie',
+      description: req.body.description || '',
+      poster: req.body.coverImageUrl || req.body.poster || 'https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=600&auto=format&fit=crop&q=80',
+      backdrop: req.body.coverImageUrl || req.body.backdrop || 'https://images.unsplash.com/photo-1518709268805-4e9042af9f23?w=1600&auto=format&fit=crop&q=80',
+      coverImageUrl: req.body.coverImageUrl || '',
+      videoUrl: req.body.videoUrl || '',
+      trailerUrl: req.body.trailerUrl || '',
+      year: Number(req.body.year) || new Date().getFullYear(),
+      duration: Number(req.body.duration) || 90,
+      genre: genreArray,
+      language: req.body.language || 'English',
+      country: req.body.country || 'International',
+      director: req.body.director || 'Creator',
+      cast: Array.isArray(req.body.cast) ? req.body.cast : [],
+      rating: Number(req.body.rating) || 8.0,
+      ageClassification: req.body.ageClassification || 'PG-13',
+      isPremium,
+      accessType: isPremium ? 'premium' : 'free',
+      isFeatured: Boolean(req.body.isFeatured),
+      isTrending: req.body.isTrending !== undefined ? Boolean(req.body.isTrending) : true,
+      isPublished: req.body.published !== undefined ? Boolean(req.body.published) : true,
+      published: req.body.published !== undefined ? Boolean(req.body.published) : true,
+      qualityBadge: (req.body.quality as 'HD' | 'FHD' | '4K') || 'HD',
+      viewsCount: 0,
+      likesCount: 0,
+      createdAt: req.body.createdAt || now,
+      updatedAt: now
+    };
+    catalogMoviesMap.set(id, newMovie);
+    movies.unshift(newMovie);
+    saveContentStore();
+    syncActiveReleaseState();
+    persistContentItemToFirestore(mapToContentItem(newMovie)).catch(() => {});
+    return res.json({ success: true, content: mapToContentItem(newMovie) });
+  } else {
+    const newSeries: TVSeries = {
+      id,
+      title: req.body.title ? String(req.body.title).trim() : 'Untitled Series',
+      description: req.body.description || '',
+      poster: req.body.coverImageUrl || req.body.poster || 'https://images.unsplash.com/photo-1526374965328-7f61d4dc18c5?w=600&auto=format&fit=crop&q=80',
+      backdrop: req.body.coverImageUrl || req.body.backdrop || 'https://images.unsplash.com/photo-1550751827-4bd374c3f58b?w=1600&auto=format&fit=crop&q=80',
+      coverImageUrl: req.body.coverImageUrl || '',
+      trailerUrl: req.body.trailerUrl || '',
+      year: Number(req.body.year) || new Date().getFullYear(),
+      genre: genreArray,
+      language: req.body.language || 'English',
+      country: req.body.country || 'International',
+      director: req.body.director || 'Creator',
+      cast: Array.isArray(req.body.cast) ? req.body.cast : [],
+      rating: Number(req.body.rating) || 8.5,
+      ageClassification: req.body.ageClassification || 'PG-13',
+      isPremium,
+      accessType: isPremium ? 'premium' : 'free',
+      isFeatured: Boolean(req.body.isFeatured),
+      isTrending: req.body.isTrending !== undefined ? Boolean(req.body.isTrending) : true,
+      isPublished: req.body.published !== undefined ? Boolean(req.body.published) : true,
+      published: req.body.published !== undefined ? Boolean(req.body.published) : true,
+      qualityBadge: (req.body.quality as 'HD' | 'FHD' | '4K') || 'HD',
+      viewsCount: 0,
+      likesCount: 0,
+      seasonsCount: 1,
+      createdAt: req.body.createdAt || now,
+      updatedAt: now
+    };
+    catalogSeriesMap.set(id, newSeries);
+    seriesList.unshift(newSeries);
+    saveContentStore();
+    syncActiveReleaseState();
+    persistContentItemToFirestore(mapToContentItem(newSeries)).catch(() => {});
+    return res.json({ success: true, content: mapToContentItem(newSeries) });
+  }
+});
+
+// GET deleted content IDs endpoint for client synchronization
+app.get('/api/deleted-ids', (_req: Request, res: Response) => {
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate, max-age=0');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+  res.json(Array.from(deletedContentIds));
 });
 
 // DELETE content item - Explicit admin deletion removes database records and unlinks associated media
@@ -2719,11 +3490,36 @@ app.delete('/api/content/:id', verifyAdmin, async (req: Request, res: Response) 
   const targetEpisodes = episodesList.filter(e => e.seriesId === id);
 
   deletedContentIds.add(id);
+  catalogMoviesMap.delete(id);
+  catalogSeriesMap.delete(id);
   movies = movies.filter(m => m.id !== id);
   seriesList = seriesList.filter(s => s.id !== id);
   episodesList = episodesList.filter(e => e.seriesId !== id);
   seasonsList = seasonsList.filter(sn => sn.seriesId !== id);
   saveContentStore();
+
+  // Instantly purge from active published release (Requirements 3 & 4)
+  if (activeRelease) {
+    activeRelease.movies = activeRelease.movies.filter(m => m.id !== id);
+    activeRelease.series = activeRelease.series.filter(s => s.id !== id);
+    activeRelease.episodes = activeRelease.episodes ? activeRelease.episodes.filter(e => e.seriesId !== id) : [];
+    activeRelease.seasons = activeRelease.seasons ? activeRelease.seasons.filter(sn => sn.seriesId !== id) : [];
+    activeRelease.deletedContentIds = Array.from(deletedContentIds);
+    activeRelease.counts = {
+      movies: activeRelease.movies.length,
+      series: activeRelease.series.length,
+      seasons: activeRelease.seasons.length,
+      episodes: activeRelease.episodes.length
+    };
+    savePublishedReleaseStore();
+
+    if (firestoreDb) {
+      try {
+        const releaseDocRef = firestoreDoc(firestoreCollection(firestoreDb, 'releases'), 'current');
+        firestoreSetDoc(releaseDocRef, activeRelease, { merge: true }).catch(() => {});
+      } catch {}
+    }
+  }
 
   // Safely clean up associated local media files on explicit Admin delete
   try {
@@ -2758,6 +3554,7 @@ app.delete('/api/content/:id', verifyAdmin, async (req: Request, res: Response) 
     console.warn(`[Firestore Delete] Server delete notice for ${id}:`, fsErr);
   });
 
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate, max-age=0');
   res.json({ success: true, message: 'Content item deleted successfully' });
 });
 
@@ -2772,6 +3569,8 @@ app.post('/api/content/:id/publish', verifyAdmin, (req: Request, res: Response) 
     movie.published = Boolean(published);
     movie.updatedAt = new Date().toISOString();
     saveContentStore();
+    syncActiveReleaseState();
+    persistContentItemToFirestore(mapToContentItem(movie)).catch(() => {});
     return res.json({ success: true, content: mapToContentItem(movie) });
   }
 
@@ -2781,6 +3580,8 @@ app.post('/api/content/:id/publish', verifyAdmin, (req: Request, res: Response) 
     series.published = Boolean(published);
     series.updatedAt = new Date().toISOString();
     saveContentStore();
+    syncActiveReleaseState();
+    persistContentItemToFirestore(mapToContentItem(series)).catch(() => {});
     return res.json({ success: true, content: mapToContentItem(series) });
   }
 
@@ -2788,12 +3589,22 @@ app.post('/api/content/:id/publish', verifyAdmin, (req: Request, res: Response) 
 });
 
 // Movies
+// Canonical Published Release synchronization (Requirements 1, 2, 3, 4, 5, 6)
 app.get('/api/movies', (req: Request, res: Response) => {
-  let result = [...movies];
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate, max-age=0');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+
   const { genre, language, year, ratingMin, search, featured, trending, publishedOnly } = req.query;
 
-  if (publishedOnly !== 'false') {
-    result = result.filter(m => m.isPublished);
+  let result: Movie[];
+  if (publishedOnly !== 'false' && activeRelease) {
+    result = [...activeRelease.movies.filter(m => !deletedContentIds.has(m.id))];
+  } else {
+    result = [...movies.filter(m => !deletedContentIds.has(m.id))];
+    if (publishedOnly !== 'false') {
+      result = result.filter(m => m.isPublished !== false && m.published !== false);
+    }
   }
 
   if (search) {
@@ -2885,6 +3696,7 @@ app.post('/api/movies', (req: Request, res: Response) => {
   deletedContentIds.delete(newMovie.id);
   movies.unshift(newMovie);
   saveContentStore();
+  syncActiveReleaseState();
   persistContentItemToFirestore(mapToContentItem(newMovie)).catch(() => {});
   res.json({ success: true, movie: newMovie });
 });
@@ -2902,6 +3714,7 @@ app.put('/api/movies/:id', (req: Request, res: Response) => {
     updatedAt: new Date().toISOString()
   };
   saveContentStore();
+  syncActiveReleaseState();
   persistContentItemToFirestore(mapToContentItem(movies[index])).catch(() => {});
 
   res.json({ success: true, movie: movies[index] });
@@ -2914,8 +3727,21 @@ app.delete('/api/movies/:id', (req: Request, res: Response) => {
   }
   const deleted = movies.splice(index, 1);
   deletedContentIds.add(req.params.id);
+  catalogMoviesMap.delete(req.params.id);
   saveContentStore();
+
+  if (activeRelease) {
+    activeRelease.movies = activeRelease.movies.filter(m => m.id !== req.params.id);
+    activeRelease.deletedContentIds = Array.from(deletedContentIds);
+    activeRelease.counts.movies = activeRelease.movies.length;
+    savePublishedReleaseStore();
+    if (firestoreDb) {
+      firestoreSetDoc(firestoreDoc(firestoreCollection(firestoreDb, 'releases'), 'current'), activeRelease, { merge: true }).catch(() => {});
+    }
+  }
+
   deleteContentItemFromFirestore(req.params.id).catch(() => {});
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate, max-age=0');
   res.json({ success: true, movie: deleted[0] });
 });
 
@@ -2991,9 +3817,23 @@ app.get('/api/likes', (req: Request, res: Response) => {
 });
 
 // Series
+// Canonical Published Release synchronization (Requirements 1, 2, 3, 4, 5, 6)
 app.get('/api/series', (req: Request, res: Response) => {
-  let result = [...seriesList];
-  const { genre, search } = req.query;
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate, max-age=0');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+
+  const { genre, search, publishedOnly } = req.query;
+
+  let result: TVSeries[];
+  if (publishedOnly !== 'false' && activeRelease) {
+    result = [...activeRelease.series.filter(s => !deletedContentIds.has(s.id))];
+  } else {
+    result = [...seriesList.filter(s => !deletedContentIds.has(s.id))];
+    if (publishedOnly !== 'false') {
+      result = result.filter(s => s.isPublished !== false && s.published !== false);
+    }
+  }
 
   if (search) {
     const q = String(search).toLowerCase();
@@ -3093,6 +3933,7 @@ app.post('/api/series', (req: Request, res: Response) => {
   episodesList.push(defaultEpisode);
   deletedContentIds.delete(newSeries.id);
   saveContentStore();
+  syncActiveReleaseState();
   persistContentItemToFirestore(mapToContentItem(newSeries)).catch(() => {});
 
   res.json({ success: true, series: newSeries });
@@ -3104,6 +3945,7 @@ app.put('/api/series/:id', (req: Request, res: Response) => {
   deletedContentIds.delete(req.params.id);
   seriesList[index] = { ...seriesList[index], ...req.body, updatedAt: new Date().toISOString() };
   saveContentStore();
+  syncActiveReleaseState();
   persistContentItemToFirestore(mapToContentItem(seriesList[index])).catch(() => {});
   res.json({ success: true, series: seriesList[index] });
 });
@@ -3113,11 +3955,28 @@ app.delete('/api/series/:id', (req: Request, res: Response) => {
   if (index === -1) return res.status(404).json({ error: 'Series not found' });
   const deleted = seriesList.splice(index, 1);
   deletedContentIds.add(req.params.id);
+  catalogSeriesMap.delete(req.params.id);
   // cleanup seasons and episodes
   seasonsList = seasonsList.filter(sn => sn.seriesId !== req.params.id);
   episodesList = episodesList.filter(ep => ep.seriesId !== req.params.id);
   saveContentStore();
+
+  if (activeRelease) {
+    activeRelease.series = activeRelease.series.filter(s => s.id !== req.params.id);
+    activeRelease.seasons = activeRelease.seasons ? activeRelease.seasons.filter(sn => sn.seriesId !== req.params.id) : [];
+    activeRelease.episodes = activeRelease.episodes ? activeRelease.episodes.filter(ep => ep.seriesId !== req.params.id) : [];
+    activeRelease.deletedContentIds = Array.from(deletedContentIds);
+    activeRelease.counts.series = activeRelease.series.length;
+    activeRelease.counts.seasons = activeRelease.seasons.length;
+    activeRelease.counts.episodes = activeRelease.episodes.length;
+    savePublishedReleaseStore();
+    if (firestoreDb) {
+      firestoreSetDoc(firestoreDoc(firestoreCollection(firestoreDb, 'releases'), 'current'), activeRelease, { merge: true }).catch(() => {});
+    }
+  }
+
   deleteContentItemFromFirestore(req.params.id).catch(() => {});
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate, max-age=0');
   res.json({ success: true, series: deleted[0] });
 });
 
@@ -3897,44 +4756,48 @@ app.post(['/api/pi/payments/complete', '/api/pi/complete-payment'], async (req: 
       };
       payments.unshift(payment);
     }
+    savePaymentsStore();
 
-    // Identify user to upgrade
+    // Create or extend persistent VIP subscription
     const targetUserId = userId || payment.userId;
-    let user = users.find(u => u.id === targetUserId || (u.piUsername && u.piUsername === responseData?.user_uid));
-    if (!user && users.length > 0) {
-      user = users[0];
-    }
-
     const now = new Date();
-    const expiry = new Date();
-    if (selectedPlan === 'annual') {
-      expiry.setFullYear(now.getFullYear() + 1);
-    } else {
-      expiry.setMonth(now.getMonth() + 1);
+    const userForPayment = users.find(u =>
+      (targetUserId && u.id === targetUserId) ||
+      (responseData?.user_uid && u.piUserId === responseData.user_uid) ||
+      (userId && u.id === userId)
+    );
+
+    let paymentPiUsername: string | undefined = undefined;
+    const paymentCandidates = [
+      req.body?.piUsername,
+      userForPayment?.piUsername,
+      userForPayment?.username,
+      responseData?.username
+    ];
+    for (const c of paymentCandidates) {
+      if (typeof c === 'string' && c.trim() && !isUuidOrInternalId(c)) {
+        paymentPiUsername = c.trim();
+        break;
+      }
     }
 
-    const subscription: Subscription = {
-      id: 'sub-' + Date.now(),
-      userId: user ? user.id : (targetUserId || 'usr_demo'),
+    const { subscription, user: updatedUser } = createOrExtendSubscription({
+      userId: targetUserId,
+      piUsername: paymentPiUsername,
+      piUserId: responseData?.user_uid,
       plan: selectedPlan,
       pricePi: amountPaid,
       transactionId: txid,
-      status: 'active',
-      startDate: now.toISOString(),
-      expiryDate: expiry.toISOString()
-    };
-    subscriptions.unshift(subscription);
+      paymentId: paymentId,
+      now
+    });
 
-    if (user) {
-      user.premiumStatus = true;
-      user.subscriptionPlan = selectedPlan;
-      user.subscriptionExpiry = expiry.toISOString();
-    }
+    const user = updatedUser;
 
     // Send confirmation notification to user
     notifications.unshift({
-      id: 'notif_vip_' + (user ? user.id : targetUserId) + '_' + Date.now(),
-      userId: user ? user.id : (targetUserId || 'usr_demo'),
+      id: 'notif_vip_' + user.id + '_' + Date.now(),
+      userId: user.id,
       title: '⭐ Premium Activated',
       message: 'Your PiFlix+ Premium membership has been successfully activated.',
       type: 'premium',
@@ -3955,7 +4818,9 @@ app.post(['/api/pi/payments/complete', '/api/pi/complete-payment'], async (req: 
       paymentId,
       txid,
       subscription,
-      user
+      user,
+      serverTime: now.toISOString(),
+      userTier: 'VIP'
     });
   } catch (err: any) {
     const isTimeout = err?.name === 'TimeoutError' || String(err?.message || '').includes('timed out');
@@ -4004,11 +4869,16 @@ app.post('/api/pi/payments/incomplete', async (req: Request, res: Response) => {
         console.info(`[Pi Payment] [${requestTimestamp}] Incomplete payment ${paymentId} completed successfully.`);
         const targetUserId = userId || payment.metadata?.userId;
         if (targetUserId) {
-          const user = users.find(u => u.id === targetUserId);
-          if (user) {
-            user.premiumStatus = true;
-            user.subscriptionPlan = payment.metadata?.plan || 'monthly';
-          }
+          const selectedPlan = payment.metadata?.plan === 'annual' ? 'annual' : 'monthly';
+          const amountPaid = selectedPlan === 'annual' ? appSettings.annualPricePi : appSettings.monthlyPricePi;
+          createOrExtendSubscription({
+            userId: targetUserId,
+            piUsername: payment.metadata?.piUsername,
+            plan: selectedPlan,
+            pricePi: amountPaid,
+            transactionId: txid,
+            paymentId
+          });
         }
         return res.json({ success: true, completed: true, paymentId, txid });
       }
@@ -4039,6 +4909,7 @@ app.post('/api/pi/create-payment', (req: Request, res: Response) => {
   };
 
   payments.unshift(paymentRecord);
+  savePaymentsStore();
 
   res.json({
     success: true,
@@ -4063,33 +4934,18 @@ app.post('/api/pi/verify-payment', (req: Request, res: Response) => {
 
   payment.status = 'completed';
   payment.piPaymentId = piTxId || `pi_tx_hash_${Date.now()}`;
+  savePaymentsStore();
 
-  const user = users.find(u => u.id === payment.userId);
+  const selectedPlan = payment.plan === 'annual' ? 'annual' : 'monthly';
   const now = new Date();
-  const expiry = new Date();
-  if (payment.plan === 'annual') {
-    expiry.setFullYear(now.getFullYear() + 1);
-  } else {
-    expiry.setMonth(now.getMonth() + 1);
-  }
-
-  const subscription: Subscription = {
-    id: 'sub-' + Date.now(),
+  const { subscription, user } = createOrExtendSubscription({
     userId: payment.userId,
-    plan: payment.plan,
+    plan: selectedPlan,
     pricePi: payment.amount,
     transactionId: payment.transactionId,
-    status: 'active',
-    startDate: now.toISOString(),
-    expiryDate: expiry.toISOString()
-  };
-  subscriptions.unshift(subscription);
-
-  if (user) {
-    user.premiumStatus = true;
-    user.subscriptionPlan = payment.plan;
-    user.subscriptionExpiry = expiry.toISOString();
-  }
+    paymentId: payment.piPaymentId,
+    now
+  });
 
   notifications.unshift({
     id: 'notif-' + Date.now(),
@@ -4105,7 +4961,9 @@ app.post('/api/pi/verify-payment', (req: Request, res: Response) => {
     success: true,
     message: 'Pi payment verified successfully! Premium activated.',
     subscription,
-    user
+    user,
+    serverTime: now.toISOString(),
+    userTier: 'VIP'
   });
 });
 
@@ -4139,7 +4997,7 @@ app.get('/api/admin/overview', verifyAdmin, (req: Request, res: Response) => {
 // --------------------------------------------------------------------------
 // PUBLIC VISITOR TRACKING ENDPOINT (Privacy-preserving session tracking)
 // --------------------------------------------------------------------------
-app.post('/api/analytics/record-visit', async (req: Request, res: Response) => {
+const handleRecordVisit = async (req: Request, res: Response) => {
   try {
     const authHeader = req.headers.authorization;
     const token = authHeader ? authHeader.replace(/^Bearer\s+/i, '').trim() : '';
@@ -4203,8 +5061,8 @@ app.post('/api/analytics/record-visit', async (req: Request, res: Response) => {
       visitor = {
         visitorId,
         source,
-        piUserId,
-        piUsername,
+        ...(piUserId ? { piUserId } : {}),
+        ...(piUsername ? { piUsername } : {}),
         firstSeen: nowIso,
         lastSeen: nowIso,
         visitDates: [todayStr],
@@ -4223,7 +5081,10 @@ app.post('/api/analytics/record-visit', async (req: Request, res: Response) => {
     console.error('Error recording visitor session:', err);
     return res.status(500).json({ error: 'Failed to record visitor session' });
   }
-});
+};
+
+app.post('/api/analytics/record-visit', handleRecordVisit);
+app.post('/api/analytics/track-visitor', handleRecordVisit);
 
 // --------------------------------------------------------------------------
 // ADMIN VISITOR ANALYTICS ENDPOINT (Strictly authenticated to administrators)
@@ -4233,7 +5094,139 @@ app.get('/api/admin/analytics/visitors', verifyAdmin, (_req: Request, res: Respo
   res.json(analytics);
 });
 
+// User subscription verification endpoint (Server-side time authority & persistent data)
+app.get(['/api/user/subscription', '/api/user/subscription/:userId'], (req: Request, res: Response) => {
+  const userId = (req.params.userId || (req.query.userId as string) || '').trim();
+  const piUsername = (req.query.piUsername as string || '').trim();
+
+  if (!userId && !piUsername) {
+    return res.status(400).json({ success: false, error: 'userId or piUsername is required' });
+  }
+
+  const serverNow = new Date();
+
+  let user = users.find(u =>
+    (userId && u.id === userId) ||
+    (piUsername && u.piUsername && u.piUsername.toLowerCase() === piUsername.toLowerCase()) ||
+    (userId && u.username.toLowerCase() === userId.toLowerCase()) ||
+    (userId && u.piUserId === userId) ||
+    (userId && u.piUsername && u.piUsername.toLowerCase() === userId.toLowerCase())
+  );
+
+  if (!user) {
+    // Check if there are subscriptions for this userId or piUsername
+    const matchingSub = subscriptions.find(s =>
+      (userId && s.userId === userId) ||
+      (piUsername && s.piUsername && s.piUsername.toLowerCase() === piUsername.toLowerCase()) ||
+      (userId && s.piUsername && s.piUsername.toLowerCase() === userId.toLowerCase()) ||
+      (userId && s.piUserId === userId)
+    );
+
+    if (matchingSub) {
+      // Auto-register user from existing subscription record so they are permanently tracked
+      let safeUsername = 'Pioneer';
+      if (matchingSub.piUsername && !isUuidOrInternalId(matchingSub.piUsername)) {
+        safeUsername = matchingSub.piUsername;
+      } else if (piUsername && !isUuidOrInternalId(piUsername)) {
+        safeUsername = piUsername;
+      }
+
+      user = {
+        id: matchingSub.userId || (matchingSub.piUserId ? `usr_pi_${matchingSub.piUserId}` : userId),
+        username: safeUsername,
+        email: `${safeUsername.toLowerCase().replace(/[^a-z0-9]/g, '')}@pioneer.network`,
+        profileImage: getDeterministicEmoji(safeUsername !== 'Pioneer' ? safeUsername : matchingSub.userId),
+        role: 'user',
+        premiumStatus: false,
+        subscriptionPlan: 'free',
+        piUsername: safeUsername !== 'Pioneer' ? safeUsername : undefined,
+        piUserId: matchingSub.piUserId,
+        piWalletAddress: `GD${crypto.createHash('sha256').update(matchingSub.userId || userId).digest('hex').substring(0, 8).toUpperCase()}...PI`,
+        createdAt: matchingSub.startDate || serverNow.toISOString(),
+        notificationSettings: {
+          newMovies: true,
+          newEpisodes: true,
+          announcements: true,
+          subscription: true
+        }
+      };
+      users.push(user);
+    } else {
+      return res.json({
+        success: true,
+        serverTime: serverNow.toISOString(),
+        userTier: 'FREE',
+        subscriptionStatus: 'none',
+        subscription: null
+      });
+    }
+  }
+
+  // Ensure user never carries a UUID as their username
+  if (user) {
+    if (piUsername && !isUuidOrInternalId(piUsername)) {
+      user.piUsername = piUsername;
+      user.username = piUsername;
+      user.email = `${piUsername.toLowerCase().replace(/[^a-z0-9]/g, '')}@pioneer.network`;
+    } else {
+      if (isUuidOrInternalId(user.username)) {
+        user.username = (user.piUsername && !isUuidOrInternalId(user.piUsername))
+          ? user.piUsername
+          : 'Pioneer';
+      }
+      if (user.piUsername && isUuidOrInternalId(user.piUsername)) {
+        user.piUsername = undefined;
+      }
+    }
+  }
+
+  const subEval = evaluateUserSubscription(user, serverNow);
+  saveUsersStore();
+
+  // Find all subscription records belonging strictly to this authenticated user
+  const userSubscriptions = subscriptions.filter(s => {
+    if (s.userId && s.userId === user.id) return true;
+    if (user.piUserId && s.piUserId && s.piUserId === user.piUserId) return true;
+    if (user.piUserId && s.userId === `usr_pi_${user.piUserId}`) return true;
+    if (user.piUsername && s.piUsername && s.piUsername.toLowerCase() === user.piUsername.toLowerCase()) return true;
+    return false;
+  }).sort((a, b) => {
+    const tA = new Date(a.expiresAt || a.expiryDate || a.startDate || 0).getTime();
+    const tB = new Date(b.expiresAt || b.expiryDate || b.startDate || 0).getTime();
+    return tB - tA;
+  });
+
+  if (subEval.subscription && !userSubscriptions.some(s => s.id === subEval.subscription!.id)) {
+    userSubscriptions.unshift(subEval.subscription);
+  }
+
+  // Find payment records strictly belonging to this authenticated user
+  const userPayments = payments.filter(p => {
+    if (p.userId && p.userId === user.id) return true;
+    if (user.piUserId && p.userId === `usr_pi_${user.piUserId}`) return true;
+    if (userSubscriptions.some(s => s.transactionId && s.transactionId === p.transactionId)) return true;
+    if (userSubscriptions.some(s => s.paymentId && p.piPaymentId && s.paymentId === p.piPaymentId)) return true;
+    return false;
+  });
+
+  return res.json({
+    success: true,
+    serverTime: serverNow.toISOString(),
+    userTier: subEval.userTier,
+    subscriptionStatus: subEval.status,
+    subscription: subEval.subscription,
+    subscriptions: userSubscriptions,
+    payments: userPayments,
+    user
+  });
+});
+
 app.get('/api/admin/users', verifyAdmin, (req: Request, res: Response) => {
+  const serverNow = new Date();
+  for (const u of users) {
+    evaluateUserSubscription(u, serverNow);
+  }
+  saveUsersStore();
   res.json(users);
 });
 
@@ -4243,6 +5236,8 @@ app.post('/api/user/language', (req: Request, res: Response) => {
   const user = users.find(u => u.id === userId);
   if (user) {
     (user as any).language = language;
+    saveUsersStore();
+    syncUserToFirestore(user).catch(() => {});
   }
   res.json({ success: true, userId, language });
 });
@@ -4250,8 +5245,31 @@ app.post('/api/user/language', (req: Request, res: Response) => {
 app.post('/api/admin/users/:id/toggle-premium', verifyAdmin, (req: Request, res: Response) => {
   const user = users.find(u => u.id === req.params.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
-  user.premiumStatus = !user.premiumStatus;
-  user.subscriptionPlan = user.premiumStatus ? 'monthly' : 'free';
+  
+  if (!user.premiumStatus) {
+    // Activating VIP: create or extend 30-day subscription
+    createOrExtendSubscription({
+      userId: user.id,
+      piUsername: user.piUsername,
+      plan: 'monthly',
+      pricePi: 0,
+      transactionId: `TX_ADMIN_OVERRIDE_${Date.now()}`
+    });
+  } else {
+    // Deactivating VIP
+    user.premiumStatus = false;
+    user.subscriptionPlan = 'free';
+    user.subscriptionExpiry = undefined;
+    for (const s of subscriptions) {
+      if (s.userId === user.id || (user.piUsername && s.piUsername?.toLowerCase() === user.piUsername.toLowerCase())) {
+        s.status = 'expired';
+        s.subscriptionStatus = 'expired';
+      }
+    }
+    saveSubscriptionsStore();
+    saveUsersStore();
+    syncUserToFirestore(user).catch(() => {});
+  }
   res.json({ success: true, user });
 });
 

@@ -22,7 +22,10 @@ export const SearchPage: React.FC = () => {
 
   const availableGenres = useMemo(() => {
     const set = new Set<string>();
-    allItems.forEach(it => it.genre?.forEach(g => set.add(g)));
+    allItems.forEach(it => {
+      const gList = Array.isArray(it.genre) ? it.genre : (typeof it.genre === 'string' ? (it.genre as string).split(',').map(s => s.trim()).filter(Boolean) : []);
+      gList.forEach(g => set.add(g));
+    });
     return Array.from(set);
   }, [allItems]);
 
@@ -47,7 +50,8 @@ export const SearchPage: React.FC = () => {
         if (selectedType === 'series' && !isSeries) return false;
 
         // Genre filter
-        if (selectedGenre !== 'all' && !item.genre.includes(selectedGenre)) return false;
+        const gList = Array.isArray(item.genre) ? item.genre : (typeof item.genre === 'string' ? (item.genre as string).split(',').map(s => s.trim()).filter(Boolean) : []);
+        if (selectedGenre !== 'all' && !gList.includes(selectedGenre)) return false;
 
         // Language filter
         if (selectedLanguage !== 'all' && item.language !== selectedLanguage) return false;
@@ -64,7 +68,7 @@ export const SearchPage: React.FC = () => {
           const matchDesc = item.description.toLowerCase().includes(q);
           const matchDirector = item.director?.toLowerCase().includes(q);
           const matchCast = item.cast?.some(c => c.toLowerCase().includes(q));
-          const matchGenre = item.genre?.some(g => g.toLowerCase().includes(q));
+          const matchGenre = gList.some(g => g.toLowerCase().includes(q));
           const matchTags = item.tags?.some(t => t.toLowerCase().includes(q));
 
           return matchTitle || matchDesc || matchDirector || matchCast || matchGenre || matchTags;
