@@ -14,6 +14,7 @@ import { uploadMediaToStorage, uploadMediaWithMetadata, deleteMediaFromStorage, 
 import { UserAvatar } from './UserAvatar';
 import { AdminSupportInbox } from './AdminSupportInbox';
 import { fetchSupportStatus } from '../lib/supportEmailApi';
+import { resolveApiUrl } from '../lib/apiConfig';
 
 function formatDuration(minutes: number | undefined | null): string {
   if (!minutes || minutes <= 0) return '0m';
@@ -74,7 +75,17 @@ export const AdminDashboard: React.FC = () => {
   const handlePublishRelease = async () => {
     setPublishError(null);
     try {
-      const rel = await publishRelease();
+      const deletedIds = new Set<string>();
+      try {
+        const rawDel = localStorage.getItem('piflix_deleted_content_ids');
+        if (rawDel) JSON.parse(rawDel).forEach((id: string) => deletedIds.add(id));
+      } catch {}
+      const cleanMovies = movies.filter(m => !deletedIds.has(m.id));
+      const cleanSeries = seriesList.filter(s => !deletedIds.has(s.id));
+      const rel = await publishRelease(undefined, cleanMovies, cleanSeries);
+      if (!rel || !Array.isArray(rel.movies) || !Array.isArray(rel.series)) {
+        throw new Error('Authoritative release payload validation failed.');
+      }
       setPublishSuccessInfo(rel);
     } catch (err: any) {
       setPublishError(err?.message || 'Failed to publish release snapshot.');
@@ -183,7 +194,7 @@ export const AdminDashboard: React.FC = () => {
   const fetchVisitorAnalytics = async () => {
     try {
       setRefreshingVisitors(true);
-      const res = await fetch('/api/admin/analytics/visitors', {
+      const res = await fetch(resolveApiUrl('/api/admin/analytics/visitors'), {
         headers: adminToken ? { Authorization: `Bearer ${adminToken}` } : {}
       });
       if (res.ok) {
@@ -202,17 +213,17 @@ export const AdminDashboard: React.FC = () => {
     setLoading(true);
     try {
       const [ovRes, usrRes, admRes, supportStatus, visRes] = await Promise.all([
-        fetch('/api/admin/overview', {
+        fetch(resolveApiUrl('/api/admin/overview'), {
           headers: adminToken ? { Authorization: `Bearer ${adminToken}` } : {}
         }).then(r => r.json()).catch(() => null),
-        fetch('/api/admin/users', {
+        fetch(resolveApiUrl('/api/admin/users'), {
           headers: adminToken ? { Authorization: `Bearer ${adminToken}` } : {}
         }).then(r => r.json()).catch(() => []),
-        fetch('/api/admin/admins', {
+        fetch(resolveApiUrl('/api/admin/admins'), {
           headers: adminToken ? { Authorization: `Bearer ${adminToken}` } : {}
         }).then(r => r.json()).catch(() => []),
         fetchSupportStatus(adminToken).catch(() => null),
-        fetch('/api/admin/analytics/visitors', {
+        fetch(resolveApiUrl('/api/admin/analytics/visitors'), {
           headers: adminToken ? { Authorization: `Bearer ${adminToken}` } : {}
         }).then(r => r.json()).catch(() => null)
       ]);
@@ -328,7 +339,7 @@ export const AdminDashboard: React.FC = () => {
       return;
     }
     try {
-      const res = await fetch('/api/admin/admins', {
+      const res = await fetch(resolveApiUrl('/api/admin/admins'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -354,7 +365,7 @@ export const AdminDashboard: React.FC = () => {
   const handleRemoveAdmin = async (idOrEmail: string) => {
     if (!confirm(`Are you sure you want to revoke administrator privileges for ${idOrEmail}?`)) return;
     try {
-      const res = await fetch(`/api/admin/admins/${encodeURIComponent(idOrEmail)}`, {
+      const res = await fetch(resolveApiUrl(`/api/admin/admins/${encodeURIComponent(idOrEmail)}`), {
         method: 'DELETE',
         headers: {
           'Authorization': `Bearer ${adminToken}`
@@ -512,7 +523,7 @@ export const AdminDashboard: React.FC = () => {
       ]);
 
       // Also async fetch from server to guarantee freshest seasons & episodes from DB
-      fetch(`/api/series/${item.id}`)
+      fetch(resolveApiUrl(`/api/series/${item.id}`))
         .then(r => r.json())
         .then(data => {
           const sList = data?.seasons || (Array.isArray(data) ? data : []);
@@ -559,7 +570,7 @@ export const AdminDashboard: React.FC = () => {
     setDetectedDurationNotice(null);
     try {
       const token = localStorage.getItem('piflix_admin_token') || adminToken;
-      const res = await fetch('/api/admin/detect-duration', {
+      const res = await fetch(resolveApiUrl('/api/admin/detect-duration'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -944,7 +955,7 @@ export const AdminDashboard: React.FC = () => {
       const method = isEditing ? 'PUT' : 'POST';
       let serverSaved = false;
       try {
-        const apiRes = await fetch(apiEndpoint, {
+        const apiRes = await fetch(resolveApiUrl(apiEndpoint), {
           method,
           headers: {
             'Content-Type': 'application/json',
@@ -1052,21 +1063,17 @@ export const AdminDashboard: React.FC = () => {
         await deleteMediaFromStorage(vidUrl).catch(() => {});
       }
 
-      // 2. Delete document from production Firestore
-      await deleteContent(itemId);
+      // 2. Delete document from production Firestore and server backend
+      await deleteContent(itemId, adminToken);
 
-      // 3. Delete from server API
-      await fetch(`/api/content/${itemId}`, {
-        method: 'DELETE',
-        headers: adminToken ? { Authorization: `Bearer ${adminToken}` } : {}
-      });
-
-      // 4. Update UI immediately
+      // 3. Update UI immediately
       removeContentItem(itemId);
+      const cleanMovies = movies.filter(m => m.id !== itemId);
+      const cleanSeries = seriesList.filter(s => s.id !== itemId);
       await refreshContent();
       await loadAdminData();
       try {
-        await publishRelease();
+        await publishRelease(undefined, cleanMovies, cleanSeries);
       } catch (pubErr) {
         console.warn('Auto-publish on delete notice:', pubErr);
       }
@@ -1087,7 +1094,7 @@ export const AdminDashboard: React.FC = () => {
     const newPublishedState = !(item.isPublished !== undefined ? item.isPublished : true);
     try {
       await setPublishedState(item.id, newPublishedState);
-      await fetch(`/api/content/${item.id}/publish`, {
+      await fetch(resolveApiUrl(`/api/content/${item.id}/publish`), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -1526,41 +1533,53 @@ export const AdminDashboard: React.FC = () => {
       {/* ---------------------------------------------------------------------- */}
       {adminSection === 'content' && (
         <div className="space-y-4">
-          {/* Authoritative Published Release Snapshot Bar (Requirements 1, 2, 4, 7) */}
-          <div className="p-4 rounded-2xl bg-gradient-to-r from-zinc-900 via-zinc-900 to-zinc-950 border border-zinc-800 shadow-xl flex flex-col md:flex-row md:items-center justify-between gap-3">
+          {/* Authoritative Catalog & Published Release Synchronization Bar (Requirements Steps 2, 3 & 4) */}
+          <div className="p-4 rounded-2xl bg-gradient-to-r from-zinc-900 via-zinc-900 to-zinc-950 border border-zinc-800 shadow-xl flex flex-col lg:flex-row lg:items-center justify-between gap-4">
             <div className="flex items-start sm:items-center gap-3">
               <div className="p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 shrink-0">
                 <Globe className="w-5 h-5" />
               </div>
-              <div className="space-y-0.5">
+              <div className="space-y-1">
                 <div className="flex items-center gap-2 flex-wrap">
-                  <span className="text-xs font-black text-white uppercase tracking-wider">Current Active Release:</span>
+                  <span className="text-xs font-black text-white uppercase tracking-wider">Live Admin Catalog:</span>
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-purple-500/20 text-purple-300 border border-purple-500/30">
+                    {movies.length} Movies, {seriesList.length} Series
+                  </span>
+                  <span className="text-zinc-600">•</span>
+                  <span className="text-xs font-black text-zinc-300 uppercase tracking-wider">Active Published Release:</span>
                   <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
                     {currentRelease?.releaseId || 'Authoritative Active'}
                   </span>
-                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-purple-500/20 text-purple-300 border border-purple-500/30">
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
                     Rev #{currentRelease?.revision || 1}
                   </span>
                 </div>
                 <div className="text-[11px] text-zinc-400 flex items-center gap-2 flex-wrap">
                   <span>
-                    Published: <strong className="text-zinc-200">{currentRelease?.publishedAt ? new Date(currentRelease.publishedAt).toLocaleString() : 'Active Synchronized'}</strong>
+                    Published Serving: <strong className="text-emerald-400">{(currentRelease?.counts?.movies ?? currentRelease?.movies?.length ?? 0)} Movies, {(currentRelease?.counts?.series ?? currentRelease?.series?.length ?? 0)} Series</strong> ({(currentRelease?.counts?.seasons ?? currentRelease?.seasons?.length ?? 0)} Seasons, {(currentRelease?.counts?.episodes ?? currentRelease?.episodes?.length ?? 0)} Episodes)
                   </span>
                   <span className="text-zinc-600">•</span>
-                  <span>
-                    Serving: <strong className="text-emerald-400">{currentRelease?.counts?.movies ?? movies.length} Movies, {currentRelease?.counts?.series ?? seriesList.length} Series</strong>
-                  </span>
-                  <span className="text-zinc-600">•</span>
-                  <span className="text-zinc-400">Canonical for Web & Pi Network</span>
+                  {movies.length === (currentRelease?.counts?.movies ?? currentRelease?.movies?.length ?? 0) && seriesList.length === (currentRelease?.counts?.series ?? currentRelease?.series?.length ?? 0) ? (
+                    <span className="inline-flex items-center gap-1 text-emerald-400 font-semibold">
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                      Synchronized (Normal Web & Pi Browser)
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 text-amber-400 font-semibold">
+                      <AlertTriangle className="w-3.5 h-3.5" />
+                      Pending Changes: Live Catalog differs from Published Release — Click "Publish to Web & Pi" to sync
+                    </span>
+                  )}
                 </div>
               </div>
             </div>
 
-            <div className="flex items-center gap-2 self-end md:self-auto shrink-0">
+            <div className="flex items-center gap-2 self-end lg:self-auto shrink-0">
               <button
                 onClick={handlePublishRelease}
                 disabled={isPublishingRelease}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold shadow-md shadow-emerald-900/30 transition disabled:opacity-50"
+                className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-black shadow-lg shadow-emerald-900/40 border border-emerald-400/40 transition disabled:opacity-50"
+                title="Publish current live catalog as authoritative snapshot to Web and Pi Network"
               >
                 {isPublishingRelease ? (
                   <>
@@ -1570,7 +1589,7 @@ export const AdminDashboard: React.FC = () => {
                 ) : (
                   <>
                     <Send className="w-3.5 h-3.5" />
-                    <span>Publish New Release</span>
+                    <span>Publish to Web & Pi</span>
                   </>
                 )}
               </button>

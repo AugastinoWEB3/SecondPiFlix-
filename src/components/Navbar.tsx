@@ -8,7 +8,7 @@ import { UserAvatar } from './UserAvatar';
 import { AppNotification } from '../types';
 import { formatNotificationTime } from '../lib/firebaseNotifications';
 import { useTranslation, SUPPORTED_LANGUAGES, LanguageCode } from '../lib/i18n';
-import { getVisiblePiUsername, isUuidOrInternalId } from '../lib/avatar';
+import { getVisiblePiUsername, isUuidOrInternalId, PROFILE_EMOJI_OPTIONS } from '../lib/avatar';
 
 export const Navbar: React.FC = () => {
   const {
@@ -17,6 +17,7 @@ export const Navbar: React.FC = () => {
     theme,
     toggleTheme,
     currentUser,
+    updateProfileEmoji,
     logout,
     isAdmin,
     notifications,
@@ -39,6 +40,7 @@ export const Navbar: React.FC = () => {
 
   const [showNotifMenu, setShowNotifMenu] = useState(false);
   const [showProfileMenu, setShowProfileMenu] = useState(false);
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
 
   const isDark = theme === 'dark';
 
@@ -411,7 +413,10 @@ export const Navbar: React.FC = () => {
           {/* User Profile Avatar / Menu */}
           <div className="relative">
             <button
-              onClick={() => setShowProfileMenu(prev => !prev)}
+              onClick={() => {
+                setShowProfileMenu(prev => !prev);
+                setShowEmojiPicker(false);
+              }}
               className={`flex items-center gap-2 p-1 rounded-full border transition hover:border-purple-500 ${
                 isDark ? 'border-zinc-700/80' : 'border-slate-300'
               }`}
@@ -434,12 +439,27 @@ export const Navbar: React.FC = () => {
                 }`}
               >
                 <div className={`flex items-center gap-3 pb-3 border-b ${isDark ? 'border-zinc-800' : 'border-slate-200'}`}>
-                  <UserAvatar
-                    user={currentUser}
-                    sizeClass="w-10 h-10"
-                    textClass="text-2xl"
-                    isDark={isDark}
-                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowEmojiPicker(prev => !prev)}
+                    className="relative group shrink-0 rounded-full focus:outline-none transition active:scale-95 cursor-pointer"
+                    title="Tap to change profile emoji"
+                    aria-label="Change profile emoji"
+                  >
+                    <UserAvatar
+                      user={currentUser}
+                      sizeClass="w-10 h-10"
+                      textClass="text-2xl"
+                      isDark={isDark}
+                      className="ring-2 ring-purple-500/50 group-hover:ring-purple-400 group-hover:scale-105 transition-all shadow-md"
+                    />
+                    <span
+                      className="absolute -bottom-1 -right-1 bg-purple-600 group-hover:bg-purple-500 text-white rounded-full p-0.5 text-[9px] shadow-sm flex items-center justify-center w-4 h-4 border border-zinc-900 transition"
+                      title="Tap to select emoji"
+                    >
+                      ✏️
+                    </span>
+                  </button>
                   <div className="truncate text-start flex-1 min-w-0">
                     <div className="font-bold truncate flex items-center gap-1.5">
                       <span>{isPiAuthenticating ? 'Connecting...' : getVisiblePiUsername(currentUser)}</span>
@@ -477,6 +497,71 @@ export const Navbar: React.FC = () => {
                     )}
                   </div>
                 </div>
+
+                {/* Profile Emoji Picker Drawer */}
+                {showEmojiPicker && (
+                  <div
+                    id="profile-emoji-picker"
+                    className={`p-2.5 rounded-xl border animate-in fade-in slide-in-from-top-2 duration-150 ${
+                      isDark ? 'bg-zinc-950/95 border-purple-900/60 shadow-xl' : 'bg-purple-50/95 border-purple-200 shadow-lg'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-2 pb-1.5 border-b border-purple-500/20">
+                      <span className="text-[11px] font-bold text-purple-400 flex items-center gap-1.5">
+                        <span>Choose Profile Emoji</span>
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setShowEmojiPicker(false)}
+                        className={`text-[10px] px-1.5 py-0.5 rounded transition ${
+                          isDark ? 'text-zinc-400 hover:text-white hover:bg-zinc-800' : 'text-slate-500 hover:text-slate-900 hover:bg-slate-200'
+                        }`}
+                        title="Close emoji picker"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-6 gap-1.5 max-h-44 overflow-y-auto pr-1 py-1 overscroll-contain">
+                      {PROFILE_EMOJI_OPTIONS.map(em => {
+                        const isSelected = (currentUser?.profileEmoji === em) || (!currentUser?.profileEmoji && em === '🐼');
+                        return (
+                          <button
+                            key={em}
+                            type="button"
+                            onClick={async () => {
+                              await updateProfileEmoji(em);
+                              setShowEmojiPicker(false);
+                            }}
+                            className={`w-8 h-8 flex items-center justify-center text-lg rounded-lg transition transform hover:scale-120 active:scale-95 cursor-pointer ${
+                              isSelected
+                                ? 'bg-purple-600 text-white ring-2 ring-purple-400 shadow-md font-bold'
+                                : isDark
+                                ? 'hover:bg-zinc-800 bg-zinc-900/80 text-white'
+                                : 'hover:bg-white bg-slate-100 text-slate-900'
+                            }`}
+                            title={`Select ${em}`}
+                            aria-label={`Select ${em}`}
+                          >
+                            {em}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <div className="flex items-center justify-between mt-2 pt-1.5 border-t border-purple-500/20 text-[10px] text-zinc-400">
+                      <span>Default: 🐼 Panda</span>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          await updateProfileEmoji('🐼');
+                          setShowEmojiPicker(false);
+                        }}
+                        className="text-purple-400 hover:underline hover:text-purple-300 font-semibold"
+                      >
+                        Reset to 🐼
+                      </button>
+                    </div>
+                  </div>
+                )}
 
                 <div className="space-y-1">
                   {/* Pi Network Sign-in in dropdown */}

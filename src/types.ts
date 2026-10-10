@@ -7,6 +7,7 @@ export interface User {
   username: string;
   email: string;
   profileImage: string;
+  profileEmoji?: string;
   role: Role;
   premiumStatus: boolean;
   subscriptionPlan: 'free' | 'monthly' | 'annual';
@@ -190,10 +191,12 @@ export interface ContentRatingReview {
   userId: string;
   username: string;
   userImage?: string;
+  profileEmoji?: string;
   contentId: string;
   rating: number; // 1-10 or 1-5
   review?: string;
   createdAt: string;
+  updatedAt?: string;
   approved: boolean;
 }
 

@@ -4,6 +4,17 @@ export const EMOJI_AVATARS: string[] = [
 ];
 
 /**
+ * Standard selectable profile emojis available to PiFlix+ users in the emoji picker.
+ * Initial default for any first-time user is always 🐼.
+ */
+export const PROFILE_EMOJI_OPTIONS: string[] = [
+  '🐼', '😀', '😎', '😍', '🥰', '😂', '🤩', '😇', '🤗', '🤔',
+  '🥳', '😴', '🤠', '👑', '🔥', '❤️', '💎', '🚀', '⭐', '🌟',
+  '🐯', '🦁', '🐺', '🦊', '🐻', '🐨', '🐸', '🐵', '🐱', '🐶',
+  '🦄', '🐲', '🦋', '🌸', '🌹', '⚽', '🎮', '🎧', '🎬', '🍀', '🌍'
+];
+
+/**
  * Deterministically maps any username or Pi Network identifier to one of the 20 standard emojis.
  * Rules:
  * - Different users receive different emojis.

@@ -1,70 +1,5 @@
 {
-  "movies": [
-    {
-      "id": "m-1789841752562",
-      "title": "The Killer of Swordsmen",
-      "description": "When the powerful are without virtue and the weak are without justice, a sword will surely emerge to cleave through an era of kneeling oppression!",
-      "poster": "https://i.postimg.cc/Qds4Wxk0/file-00000000eadc81f4b34762ce679d1d0f.png",
-      "backdrop": "https://i.postimg.cc/Qds4Wxk0/file-00000000eadc81f4b34762ce679d1d0f.png",
-      "coverImageUrl": "https://i.postimg.cc/Qds4Wxk0/file-00000000eadc81f4b34762ce679d1d0f.png",
-      "trailerUrl": "",
-      "videoUrl": "https://youtu.be/EHj5lP8j440?si=VRjfM0EQDgH2fLzU",
-      "year": 2026,
-      "duration": 95,
-      "genre": [
-        "Kung Fu/Martial Arts"
-      ],
-      "language": "Chinese",
-      "country": "International",
-      "director": "Creator",
-      "cast": [],
-      "rating": 9,
-      "ageClassification": "PG-13",
-      "isPremium": false,
-      "accessType": "free",
-      "isFeatured": false,
-      "isTrending": true,
-      "isPublished": true,
-      "published": true,
-      "qualityBadge": "HD",
-      "viewsCount": 0,
-      "likesCount": 0,
-      "createdAt": "2026-09-19T18:18:02.449Z",
-      "updatedAt": "2026-09-19T18:18:03.927Z"
-    },
-    {
-      "id": "m-1790308733046",
-      "title": "Pi Network INTRO",
-      "description": "The First Digital Currency You Can Mine on Your Phone\nStart mining Pi cryptocurrency today with our free, energy-light mobile app!",
-      "poster": "https://i.postimg.cc/JnQVS0Mp/file-00000000dfb8820882fb13655a30ed03.png",
-      "backdrop": "https://i.postimg.cc/JnQVS0Mp/file-00000000dfb8820882fb13655a30ed03.png",
-      "coverImageUrl": "https://i.postimg.cc/JnQVS0Mp/file-00000000dfb8820882fb13655a30ed03.png",
-      "trailerUrl": "",
-      "videoUrl": "/uploads/videos/vid_1790318353711_1001101026.mp4",
-      "year": 2026,
-      "duration": 1,
-      "genre": [
-        "Pi Network Blockchain"
-      ],
-      "language": "English",
-      "country": "International",
-      "director": "Creator",
-      "cast": [],
-      "rating": 9,
-      "ageClassification": "PG-13",
-      "isPremium": false,
-      "accessType": "free",
-      "isFeatured": false,
-      "isTrending": true,
-      "isPublished": true,
-      "published": true,
-      "qualityBadge": "HD",
-      "viewsCount": 0,
-      "likesCount": 0,
-      "createdAt": "2026-09-25T04:00:32.014Z",
-      "updatedAt": "2026-09-25T06:39:20.589Z"
-    }
-  ],
+  "movies": [],
   "seriesList": [
     {
       "id": "s-1789324622815",
@@ -83,7 +18,7 @@
       "country": "International",
       "director": "Creator",
       "cast": [],
-      "rating": 10,
+      "rating": 9.8,
       "ageClassification": "PG-13",
       "isPremium": true,
       "accessType": "premium",
@@ -236,6 +171,8 @@
     "sn-pi-1",
     "sn-pi-2",
     "sn-dynasty-1",
-    "sn-quantum-1"
+    "sn-quantum-1",
+    "m-1789841752562",
+    "m-1790308733046"
   ]
 }

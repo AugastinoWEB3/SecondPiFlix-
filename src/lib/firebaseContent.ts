@@ -3,6 +3,7 @@ import {
   doc,
   getDocs,
   getDoc,
+  getDocFromServer,
   setDoc,
   updateDoc,
   deleteDoc,
@@ -13,6 +14,7 @@ import {
 } from 'firebase/firestore';
 import { db, auth } from './firebase';
 import { AppSettings, PublishedRelease } from '../types';
+import { resolveApiUrl } from './apiConfig';
 
 export interface EpisodeItem {
   id: string;
@@ -221,7 +223,7 @@ export async function updateContent(id: string, updates: Partial<ContentItem>): 
 /**
  * Delete a content item permanently from production Firestore and the server backend.
  */
-export async function deleteContent(id: string): Promise<void> {
+export async function deleteContent(id: string, token?: string | null): Promise<void> {
   let firestoreSuccess = false;
   let serverSuccess = false;
   let lastError: any = null;
@@ -238,15 +240,21 @@ export async function deleteContent(id: string): Promise<void> {
 
   try {
     const authHeaders = await getAuthHeaders();
-    const res = await fetch(`/api/content/${id}`, {
+    const adminToken = token || localStorage.getItem('piflix_admin_token');
+    const apiUrl = resolveApiUrl(`/api/content/${id}`);
+    const res = await fetch(apiUrl, {
       method: 'DELETE',
       headers: {
+        'Content-Type': 'application/json',
         'x-admin-request': 'true',
+        ...(adminToken ? { Authorization: `Bearer ${adminToken}` } : {}),
         ...authHeaders
       }
     });
     if (res.ok) {
       serverSuccess = true;
+    } else {
+      console.warn(`Server API delete returned status ${res.status} for ${id}`);
     }
   } catch (err: any) {
     if (!lastError) lastError = err;
@@ -476,12 +484,14 @@ const CURRENT_RELEASE_DOC = 'current';
 
 /**
  * Fetch the authoritative published release.
- * Checks the server API first (with cache-busting), and falls back to Firestore releases/current.
+ * Checks the authoritative server API first (with cache-busting), and falls back to
+ * Firestore releases/current (using getDocFromServer to bypass stale local cache).
  */
 export async function fetchActiveRelease(): Promise<PublishedRelease | null> {
-  // 1. Try server API with no-cache
+  // 1. Try authoritative server API with cache-busting and explicit endpoint routing
   try {
-    const res = await fetch(`/api/release/current?_t=${Date.now()}`, {
+    const apiUrl = resolveApiUrl(`/api/release/current?_t=${Date.now()}`);
+    const res = await fetch(apiUrl, {
       headers: {
         'Cache-Control': 'no-cache, no-store, must-revalidate',
         'Pragma': 'no-cache'
@@ -489,26 +499,101 @@ export async function fetchActiveRelease(): Promise<PublishedRelease | null> {
     });
     if (res.ok) {
       const data = await res.json();
-      if (data && data.success && data.release) {
-        return data.release as PublishedRelease;
+      if (data && data.success && data.release && Array.isArray(data.release.movies)) {
+        const rel = data.release as PublishedRelease;
+        const delSet = new Set<string>(Array.isArray(rel.deletedContentIds) ? rel.deletedContentIds : []);
+        return {
+          ...rel,
+          movies: rel.movies.filter(m => !delSet.has(m.id)),
+          series: (rel.series || []).filter(s => !delSet.has(s.id)),
+          counts: {
+            movies: rel.movies.filter(m => !delSet.has(m.id)).length,
+            series: (rel.series || []).filter(s => !delSet.has(s.id)).length,
+            seasons: rel.seasons?.length || 0,
+            episodes: rel.episodes?.length || 0
+          }
+        };
       }
     }
   } catch (err) {
-    console.warn('Server active release fetch notice, trying Firestore:', err);
+    console.warn('[PiFlix Sync] Server active release fetch notice, trying Firestore server:', err);
   }
 
-  // 2. Fallback to Firestore releases/current
+  // 2. Fallback to Firestore releases/current - ALWAYS prefer getDocFromServer to bypass stale cache!
   try {
     const docRef = doc(db, RELEASES_COLLECTION, CURRENT_RELEASE_DOC);
-    const docSnap = await getDoc(docRef);
+    let docSnap;
+    try {
+      docSnap = await getDocFromServer(docRef);
+    } catch {
+      docSnap = await getDoc(docRef);
+    }
+
+    if (!docSnap.exists()) {
+      // Check published_releases/current as secondary fallback
+      const pubRelRef = doc(db, 'published_releases', 'current');
+      try {
+        docSnap = await getDocFromServer(pubRelRef);
+      } catch {
+        docSnap = await getDoc(pubRelRef);
+      }
+    }
+
     if (docSnap.exists()) {
-      return docSnap.data() as PublishedRelease;
+      const rel = docSnap.data() as PublishedRelease;
+      if (rel && Array.isArray(rel.movies)) {
+        const delSet = new Set<string>(Array.isArray(rel.deletedContentIds) ? rel.deletedContentIds : []);
+        return {
+          ...rel,
+          movies: rel.movies.filter(m => !delSet.has(m.id)),
+          series: (rel.series || []).filter(s => !delSet.has(s.id)),
+          counts: {
+            movies: rel.movies.filter(m => !delSet.has(m.id)).length,
+            series: (rel.series || []).filter(s => !delSet.has(s.id)).length,
+            seasons: rel.seasons?.length || 0,
+            episodes: rel.episodes?.length || 0
+          }
+        };
+      }
     }
   } catch (fsErr) {
-    console.warn('Firestore active release fetch error:', fsErr);
+    console.warn('[PiFlix Sync] Firestore active release fetch error:', fsErr);
   }
 
   return null;
+}
+
+/**
+ * Fetch the authoritative set of deleted content IDs from the server / Firestore.
+ */
+export async function fetchAuthoritativeDeletedIds(): Promise<string[]> {
+  const deletedIds = new Set<string>();
+
+  // 1. Try server API
+  try {
+    const apiUrl = resolveApiUrl(`/api/deleted-ids?_t=${Date.now()}`);
+    const res = await fetch(apiUrl, {
+      headers: {
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        'Pragma': 'no-cache'
+      }
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (Array.isArray(data)) {
+        data.forEach(id => deletedIds.add(id));
+      }
+    }
+  } catch {}
+
+  // 2. Fetch from Firestore deleted_items collection
+  try {
+    const colRef = collection(db, 'deleted_items');
+    const snap = await getDocs(colRef);
+    snap.forEach(d => deletedIds.add(d.id));
+  } catch {}
+
+  return Array.from(deletedIds);
 }
 
 /**
@@ -525,7 +610,18 @@ export function subscribeToActiveRelease(callback: (release: PublishedRelease) =
         if (docSnap.exists()) {
           const rel = docSnap.data() as PublishedRelease;
           if (rel && rel.releaseId && Array.isArray(rel.movies)) {
-            callback(rel);
+            const delSet = new Set<string>(Array.isArray(rel.deletedContentIds) ? rel.deletedContentIds : []);
+            callback({
+              ...rel,
+              movies: rel.movies.filter(m => !delSet.has(m.id)),
+              series: (rel.series || []).filter(s => !delSet.has(s.id)),
+              counts: {
+                movies: rel.movies.filter(m => !delSet.has(m.id)).length,
+                series: (rel.series || []).filter(s => !delSet.has(s.id)).length,
+                seasons: rel.seasons?.length || 0,
+                episodes: rel.episodes?.length || 0
+              }
+            });
           }
         }
       },
@@ -543,18 +639,28 @@ export function subscribeToActiveRelease(callback: (release: PublishedRelease) =
  * Admin action: Publish current content state as the new canonical release.
  * Calls /api/admin/publish and persists to Firestore.
  */
-export async function publishCatalogRelease(adminToken?: string | null): Promise<PublishedRelease> {
+export async function publishCatalogRelease(
+  adminToken?: string | null,
+  payload?: {
+    publishedBy?: string;
+    currentMovies?: any[];
+    currentSeries?: any[];
+    deletedIds?: string[];
+  }
+): Promise<PublishedRelease> {
   const authHeaders = await getAuthHeaders();
   const token = adminToken || localStorage.getItem('piflix_admin_token');
 
-  const res = await fetch('/api/admin/publish', {
+  const apiUrl = resolveApiUrl('/api/admin/publish');
+  const res = await fetch(apiUrl, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'x-admin-request': 'true',
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...authHeaders
-    }
+    },
+    body: JSON.stringify(payload || {})
   });
 
   if (!res.ok) {
@@ -569,11 +675,12 @@ export async function publishCatalogRelease(adminToken?: string | null): Promise
 
   const release = data.release as PublishedRelease;
 
-  // Non-blocking sync to Firestore releases/current and published_snapshots
+  // Non-blocking sync to Firestore releases/current, published_releases/current, and published_snapshots
   try {
     const docRef = doc(db, RELEASES_COLLECTION, CURRENT_RELEASE_DOC);
-    await setDoc(docRef, release, { merge: true });
-    await setDoc(doc(db, 'published_snapshots', release.releaseId), release, { merge: true });
+    await setDoc(docRef, release);
+    await setDoc(doc(db, 'published_releases', 'current'), release);
+    await setDoc(doc(db, 'published_snapshots', release.releaseId), release);
   } catch (fsErr) {
     console.warn('Firestore release publish sync notice:', fsErr);
   }

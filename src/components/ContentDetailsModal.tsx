@@ -6,6 +6,9 @@ import { MovieCard } from './MovieCard';
 import { UserAvatar } from './UserAvatar';
 import { formatDuration } from '../lib/formatters';
 import { getVisiblePiUsername } from '../lib/avatar';
+import { formatReviewDateTime, sortReviewsNewestFirst } from '../lib/reviews';
+import { db } from '../lib/firebase';
+import { collection, query, where, onSnapshot, doc, setDoc, serverTimestamp } from 'firebase/firestore';
 
 interface ContentDetailsModalInnerProps {
   content: Movie | TVSeries;
@@ -111,13 +114,49 @@ const ContentDetailsModalInner: React.FC<ContentDetailsModalInnerProps> = ({ con
         .catch(() => setLoadingEpisodes(false));
     }
 
-    // Fetch reviews
+    // Fetch reviews from server API (sorted newest first)
     fetch(`/api/reviews/${selectedContent.id}`)
       .then(r => r.json())
       .then(data => {
-        if (Array.isArray(data)) setReviews(data);
+        if (Array.isArray(data)) setReviews(sortReviewsNewestFirst(data));
       })
       .catch(() => {});
+
+    // Live sync from Firestore
+    let unsubscribeReviews: (() => void) | null = null;
+    try {
+      const q = query(
+        collection(db, 'reviews'),
+        where('contentId', '==', selectedContent.id)
+      );
+      unsubscribeReviews = onSnapshot(q, (snapshot) => {
+        if (!snapshot.empty) {
+          const fsReviews: ContentRatingReview[] = [];
+          snapshot.forEach(docSnap => {
+            const d = docSnap.data() as ContentRatingReview;
+            if (d && d.contentId === selectedContent.id && d.approved !== false) {
+              fsReviews.push({ ...d, id: docSnap.id });
+            }
+          });
+          if (fsReviews.length > 0) {
+            setReviews(prev => {
+              const map = new Map<string, ContentRatingReview>();
+              for (const r of prev) map.set(r.id, r);
+              for (const r of fsReviews) map.set(r.id, r);
+              return sortReviewsNewestFirst(Array.from(map.values()));
+            });
+          }
+        }
+      }, (err) => {
+        console.warn('Notice listening to Firestore reviews:', err);
+      });
+    } catch {
+      // offline / fallback
+    }
+
+    return () => {
+      if (unsubscribeReviews) unsubscribeReviews();
+    };
   }, [selectedContent.id, isSeries]);
 
   // Filter episodes strictly for the selected TV series and selected season
@@ -159,6 +198,7 @@ const ContentDetailsModalInner: React.FC<ContentDetailsModalInnerProps> = ({ con
           userId: currentUser.id,
           username: getVisiblePiUsername(currentUser),
           userImage: currentUser.profileImage,
+          profileEmoji: currentUser.profileEmoji || (currentUser.profileImage && currentUser.profileImage.length <= 4 ? currentUser.profileImage : '🐼'),
           contentId: selectedContent.id,
           rating: newRating,
           review: newReviewText.trim()
@@ -166,11 +206,25 @@ const ContentDetailsModalInner: React.FC<ContentDetailsModalInnerProps> = ({ con
       });
       const data = await res.json();
       if (data.success && data.review) {
+        // Also persist to Firestore directly for client-side resilience
+        try {
+          const revDocRef = doc(db, 'reviews', data.review.id);
+          setDoc(revDocRef, {
+            ...data.review,
+            serverCreatedAt: serverTimestamp()
+          }, { merge: true }).catch(() => {});
+        } catch {
+          // ignore
+        }
+
         setReviews(prev => {
           const filtered = prev.filter(r => r.userId !== currentUser.id && r.id !== data.review.id);
-          return [data.review, ...filtered];
+          return sortReviewsNewestFirst([data.review, ...filtered]);
         });
         setNewReviewText('');
+        if (typeof data.averageRating === 'number') {
+          selectedContent.rating = data.averageRating;
+        }
         refreshContent();
       }
     } catch (err) {
@@ -691,11 +745,15 @@ const ContentDetailsModalInner: React.FC<ContentDetailsModalInnerProps> = ({ con
                 <p className="text-xs text-zinc-500 italic">No reviews yet. Be the first Pioneer to review!</p>
               ) : (
                 reviews.map(r => (
-                  <div key={r.id} className="p-3.5 bg-zinc-900/40 rounded-xl border border-zinc-800/60 space-y-1 text-xs">
+                  <div key={r.id} className="p-3.5 bg-zinc-900/40 rounded-xl border border-zinc-800/60 space-y-1.5 text-xs">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
                         <UserAvatar
-                          user={{ username: r.username, profileImage: r.userImage }}
+                          user={{
+                            username: r.username,
+                            profileImage: r.userImage,
+                            profileEmoji: (r as any).profileEmoji || (r.userImage && !r.userImage.startsWith('http') && r.userImage.length <= 4 ? r.userImage : undefined)
+                          }}
                           sizeClass="w-5 h-5"
                           textClass="text-[10px]"
                           isDark={true}
@@ -708,6 +766,12 @@ const ContentDetailsModalInner: React.FC<ContentDetailsModalInnerProps> = ({ con
                       </div>
                     </div>
                     <p className="text-zinc-300 leading-relaxed pl-7">{r.review}</p>
+                    <div className="pl-7 pt-0.5 flex items-center gap-1.5 text-[10px] text-zinc-400">
+                      <span>{formatReviewDateTime(r.createdAt)}</span>
+                      {r.updatedAt && (
+                        <span className="text-zinc-500 text-[9px]">(edited)</span>
+                      )}
+                    </div>
                   </div>
                 ))
               )}

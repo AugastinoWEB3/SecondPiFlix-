@@ -16,16 +16,18 @@
       "newEpisodes": true,
       "announcements": true,
       "subscription": true
-    }
+    },
+    "profileEmoji": "🐼"
   },
   {
     "id": "usr_demo",
     "username": "alex_pi99",
     "email": "alexpi99@pioneer.network",
-    "profileImage": "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&auto=format&fit=crop&q=80",
+    "profileImage": "🐼",
+    "profileEmoji": "🐼",
     "role": "user",
-    "premiumStatus": false,
-    "subscriptionPlan": "free",
+    "premiumStatus": true,
+    "subscriptionPlan": "monthly",
     "piUsername": "alex_pi99",
     "piWalletAddress": "GC3X...PIWALLETDEMO",
     "createdAt": "2025-02-15T10:00:00Z",
@@ -34,13 +36,15 @@
       "newEpisodes": true,
       "announcements": true,
       "subscription": true
-    }
+    },
+    "subscriptionExpiry": "2029-01-27T00:51:33.605Z"
   },
   {
     "id": "usr_pi_88918cf6-a9eb-4e85-8ee9-8d4a7ca61a2b",
     "username": "Augastino",
     "email": "augastino@pioneer.network",
-    "profileImage": "🤗",
+    "profileImage": "🚀",
+    "profileEmoji": "🚀",
     "role": "user",
     "premiumStatus": true,
     "subscriptionPlan": "monthly",
@@ -54,6 +58,6 @@
       "announcements": true,
       "subscription": true
     },
-    "subscriptionExpiry": "2027-12-29T00:51:33.605Z"
+    "subscriptionExpiry": "2029-01-27T00:51:33.605Z"
   }
 ]

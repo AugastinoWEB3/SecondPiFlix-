@@ -1,10 +1,12 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { Movie, TVSeries, Episode, User, AppSettings, WatchHistoryItem, WatchlistItem, LikedItem, AppNotification, ContentType, ContentItem, PublishedRelease } from '../types';
 import { initialSettings, defaultUsers } from '../data/mockData';
-import { subscribeToContent, subscribeToDeletedItems, fetchSettingsFromFirestore, saveSettingsToFirestore, subscribeToSettings, fetchActiveRelease, subscribeToActiveRelease, publishCatalogRelease } from '../lib/firebaseContent';
+import { subscribeToContent, subscribeToDeletedItems, fetchSettingsFromFirestore, saveSettingsToFirestore, subscribeToSettings, fetchActiveRelease, subscribeToActiveRelease, publishCatalogRelease, fetchAuthoritativeDeletedIds } from '../lib/firebaseContent';
+import { resolveApiUrl } from '../lib/apiConfig';
 import { subscribeToUserNotifications, markNotificationAsRead, markAllNotificationsAsRead, createNotification } from '../lib/firebaseNotifications';
-import { auth } from '../lib/firebase';
+import { auth, db } from '../lib/firebase';
 import { onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
+import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { loginAdminWithEmail, loginAdminWithGoogle, registerAdminAccount, logoutAdminUser, verifyTokenWithBackend } from '../lib/firebaseAuth';
 import { authenticateWithPi } from '../lib/piAuth';
 import { getDeterministicEmoji, isUuidOrInternalId, getVisiblePiUsername } from '../lib/avatar';
@@ -21,6 +23,7 @@ interface AppContextType {
   // User & Auth
   currentUser: User;
   setCurrentUser: (user: User) => void;
+  updateProfileEmoji: (newEmoji: string) => Promise<void>;
   login: (username: string, pass?: string) => Promise<boolean>;
   logout: () => void;
   isAdmin: boolean;
@@ -47,7 +50,7 @@ interface AppContextType {
   // Authoritative Published Release System (Requirements 1-7)
   currentRelease: PublishedRelease | null;
   isPublishingRelease: boolean;
-  publishRelease: (publishedBy?: string) => Promise<PublishedRelease>;
+  publishRelease: (publishedBy?: string, freshMovies?: Movie[], freshSeries?: TVSeries[]) => Promise<PublishedRelease>;
   applyPublishedRelease: (release: PublishedRelease) => void;
 
   // Navigation / Views
@@ -136,7 +139,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             parsed.piUsername = undefined;
           }
           if (parsed?.profileImage && (parsed.profileImage.includes('dicebear') || parsed.profileImage.includes('bottts'))) {
-            parsed.profileImage = getDeterministicEmoji(parsed.piUsername || parsed.username);
+            parsed.profileImage = parsed.profileEmoji || '🐼';
+          }
+          // Restore user-specific cached profileEmoji if present
+          const userSpecificKey = `piflix_user_emoji_${parsed.id}`;
+          const cachedEmoji = localStorage.getItem(userSpecificKey)
+            || (parsed.piUserId ? localStorage.getItem(`piflix_user_emoji_${parsed.piUserId}`) : null);
+
+          if (cachedEmoji) {
+            parsed.profileEmoji = cachedEmoji;
+            parsed.profileImage = cachedEmoji;
+          } else if (!parsed.profileEmoji) {
+            if (parsed.profileImage && !parsed.profileImage.startsWith('http') && parsed.profileImage.length <= 4) {
+              parsed.profileEmoji = parsed.profileImage;
+            } else {
+              parsed.profileEmoji = '🐼';
+              parsed.profileImage = '🐼';
+            }
           }
           localStorage.setItem('piflix_current_user', JSON.stringify(parsed));
           return parsed;
@@ -589,10 +608,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, []);
 
   // Admin action to publish current catalog to canonical release
-  const publishRelease = async (publishedBy?: string): Promise<PublishedRelease> => {
+  const publishRelease = async (publishedBy?: string, freshMovies?: Movie[], freshSeries?: TVSeries[]): Promise<PublishedRelease> => {
     setIsPublishingRelease(true);
     try {
-      const release = await publishCatalogRelease(adminToken);
+      const deletedIds = Array.from(getDeletedIds());
+      const effMovies = (freshMovies || movies).filter(m => !deletedIds.includes(m.id));
+      const effSeries = (freshSeries || seriesList).filter(s => !deletedIds.includes(s.id));
+      const release = await publishCatalogRelease(adminToken, {
+        publishedBy: publishedBy || currentUser.email || 'Admin',
+        currentMovies: effMovies,
+        currentSeries: effSeries,
+        deletedIds
+      });
       applyPublishedRelease(release);
       setIsPublishingRelease(false);
       return release;
@@ -704,141 +731,154 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const seriesFromItems = activeItems.filter(i => i.type === 'series' || i.id.startsWith('s-'));
 
     setMovies(prev => {
-      const filteredPrev = prev.filter(m => !deleted.has(m.id));
-      const map = new Map<string, Movie>(filteredPrev.map(m => [m.id, m]));
+      // Build incoming movies map
+      const incomingMoviesMap = new Map<string, Movie>();
       moviesFromItems.forEach(item => {
-        const existing = map.get(item.id);
-        const itemUpdated = new Date(item.updatedAt || item.createdAt || 0).getTime();
-        const existingUpdated = new Date(existing?.updatedAt || existing?.createdAt || 0).getTime();
-        if (existing && existingUpdated > itemUpdated) {
-          // Keep existing if local state has a strictly newer timestamp
-          return;
-        }
-
-        map.set(item.id, {
+        incomingMoviesMap.set(item.id, {
           id: item.id,
           title: item.title,
           description: item.description,
-          poster: item.coverImageUrl || existing?.poster || 'https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=600&auto=format&fit=crop&q=80',
-          backdrop: item.coverImageUrl || existing?.backdrop || 'https://images.unsplash.com/photo-1518709268805-4e9042af9f23?w=1600&auto=format&fit=crop&q=80',
-          coverImageUrl: item.coverImageUrl || existing?.coverImageUrl || '',
-          videoUrl: item.videoUrl || existing?.videoUrl || '',
-          trailerUrl: item.trailerUrl || existing?.trailerUrl || '',
-          year: item.year || existing?.year || new Date().getFullYear(),
-          duration: Number(item.duration) || existing?.duration || 95,
-          genre: Array.isArray(item.genre) ? item.genre : (item.genre ? String(item.genre).split(',').map(s => s.trim()) : (existing?.genre || ['Action'])),
-          language: item.language || existing?.language || 'English',
-          country: item.country || existing?.country || 'International',
-          director: item.director || existing?.director || 'Creator',
-          cast: Array.isArray(item.cast) ? item.cast : (existing?.cast || []),
-          rating: item.rating !== undefined ? Number(item.rating) : (existing?.rating || 8.0),
-          ageClassification: (item as any).ageClassification || existing?.ageClassification || 'PG-13',
+          poster: item.coverImageUrl || 'https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=600&auto=format&fit=crop&q=80',
+          backdrop: item.coverImageUrl || 'https://images.unsplash.com/photo-1518709268805-4e9042af9f23?w=1600&auto=format&fit=crop&q=80',
+          coverImageUrl: item.coverImageUrl || '',
+          videoUrl: item.videoUrl || '',
+          trailerUrl: item.trailerUrl || '',
+          year: item.year || new Date().getFullYear(),
+          duration: Number(item.duration) || 95,
+          genre: Array.isArray(item.genre) ? item.genre : (item.genre ? String(item.genre).split(',').map(s => s.trim()) : ['Action']),
+          language: item.language || 'English',
+          country: item.country || 'International',
+          director: item.director || 'Creator',
+          cast: Array.isArray(item.cast) ? item.cast : [],
+          rating: item.rating !== undefined ? Number(item.rating) : 8.0,
+          ageClassification: (item as any).ageClassification || 'PG-13',
           isPremium: item.accessType === 'premium',
           accessType: item.accessType || (item.accessType === 'premium' ? 'premium' : 'free'),
-          isFeatured: item.isFeatured !== undefined ? item.isFeatured : (existing?.isFeatured || false),
-          isTrending: item.isTrending !== undefined ? item.isTrending : (existing?.isTrending !== undefined ? existing.isTrending : true),
+          isFeatured: item.isFeatured !== undefined ? item.isFeatured : false,
+          isTrending: item.isTrending !== undefined ? item.isTrending : true,
           isPublished: item.published !== false,
           published: item.published !== false,
-          qualityBadge: item.quality || existing?.qualityBadge || 'HD',
-          viewsCount: existing?.viewsCount || 0,
-          likesCount: existing?.likesCount || 0,
-          createdAt: item.createdAt || existing?.createdAt || new Date().toISOString(),
+          qualityBadge: item.quality || 'HD',
+          viewsCount: 0,
+          likesCount: 0,
+          createdAt: item.createdAt || new Date().toISOString(),
           updatedAt: item.updatedAt || new Date().toISOString()
         });
       });
-      return sortNewestFirst(Array.from(map.values()).filter(m => !deleted.has(m.id)));
+
+      // The live Firestore content snapshot directly updates movies state:
+      return sortNewestFirst(Array.from(incomingMoviesMap.values()).filter(m => !deleted.has(m.id)));
     });
 
-    setSeriesList(prev => {
-      const filteredPrev = prev.filter(s => !deleted.has(s.id));
-      const map = new Map<string, TVSeries>(filteredPrev.map(s => [s.id, s]));
+    setSeriesList(() => {
+      const incomingSeriesMap = new Map<string, TVSeries>();
       seriesFromItems.forEach(item => {
-        const existing = map.get(item.id);
-        const itemUpdated = new Date(item.updatedAt || item.createdAt || 0).getTime();
-        const existingUpdated = new Date(existing?.updatedAt || existing?.createdAt || 0).getTime();
-        if (existing && existingUpdated > itemUpdated) {
-          return;
-        }
+        const resolvedSeasons = item.seasons;
+        const resolvedEpisodes = (item.episodes as any);
+        const resolvedCount = item.seasonsCount || (resolvedSeasons ? resolvedSeasons.length : 1);
 
-        const resolvedSeasons = item.seasons || existing?.seasons;
-        const resolvedEpisodes = (item.episodes as any) || existing?.episodes;
-        const resolvedCount = item.seasonsCount || (resolvedSeasons ? resolvedSeasons.length : (existing?.seasonsCount || 1));
-
-        map.set(item.id, {
+        incomingSeriesMap.set(item.id, {
           id: item.id,
           title: item.title,
           description: item.description,
-          poster: item.coverImageUrl || existing?.poster || 'https://images.unsplash.com/photo-1526374965328-7f61d4dc18c5?w=600&auto=format&fit=crop&q=80',
-          backdrop: item.coverImageUrl || existing?.backdrop || 'https://images.unsplash.com/photo-1550751827-4bd374c3f58b?w=1600&auto=format&fit=crop&q=80',
-          coverImageUrl: item.coverImageUrl || existing?.coverImageUrl || '',
-          trailerUrl: item.trailerUrl || existing?.trailerUrl || '',
-          year: item.year || existing?.year || new Date().getFullYear(),
-          genre: Array.isArray(item.genre) ? item.genre : (item.genre ? String(item.genre).split(',').map(s => s.trim()) : (existing?.genre || ['Drama'])),
-          language: item.language || existing?.language || 'English',
-          country: item.country || existing?.country || 'International',
-          director: item.director || existing?.director || 'Creator',
-          cast: Array.isArray(item.cast) ? item.cast : (existing?.cast || []),
-          rating: item.rating !== undefined ? Number(item.rating) : (existing?.rating || 8.5),
-          ageClassification: (item as any).ageClassification || existing?.ageClassification || 'PG-13',
+          poster: item.coverImageUrl || 'https://images.unsplash.com/photo-1526374965328-7f61d4dc18c5?w=600&auto=format&fit=crop&q=80',
+          backdrop: item.coverImageUrl || 'https://images.unsplash.com/photo-1550751827-4bd374c3f58b?w=1600&auto=format&fit=crop&q=80',
+          coverImageUrl: item.coverImageUrl || '',
+          trailerUrl: item.trailerUrl || '',
+          year: item.year || new Date().getFullYear(),
+          genre: Array.isArray(item.genre) ? item.genre : (item.genre ? String(item.genre).split(',').map(s => s.trim()) : ['Drama']),
+          language: item.language || 'English',
+          country: item.country || 'International',
+          director: item.director || 'Creator',
+          cast: Array.isArray(item.cast) ? item.cast : [],
+          rating: item.rating !== undefined ? Number(item.rating) : 8.5,
+          ageClassification: (item as any).ageClassification || 'PG-13',
           isPremium: item.accessType === 'premium',
           accessType: item.accessType || (item.accessType === 'premium' ? 'premium' : 'free'),
-          isFeatured: item.isFeatured !== undefined ? item.isFeatured : (existing?.isFeatured || false),
-          isTrending: item.isTrending !== undefined ? item.isTrending : (existing?.isTrending !== undefined ? existing.isTrending : true),
+          isFeatured: item.isFeatured !== undefined ? item.isFeatured : false,
+          isTrending: item.isTrending !== undefined ? item.isTrending : true,
           isPublished: item.published !== false,
           published: item.published !== false,
-          qualityBadge: item.quality || existing?.qualityBadge || 'HD',
-          viewsCount: existing?.viewsCount || 0,
-          likesCount: existing?.likesCount || 0,
+          qualityBadge: item.quality || 'HD',
+          viewsCount: 0,
+          likesCount: 0,
           seasonsCount: resolvedCount,
           seasons: resolvedSeasons,
           episodes: resolvedEpisodes,
-          createdAt: item.createdAt || existing?.createdAt || new Date().toISOString(),
+          createdAt: item.createdAt || new Date().toISOString(),
           updatedAt: item.updatedAt || new Date().toISOString()
         });
       });
-      return sortNewestFirst(Array.from(map.values()).filter(s => !deleted.has(s.id)));
+
+      // The live Firestore content snapshot directly updates series state:
+      return sortNewestFirst(Array.from(incomingSeriesMap.values()).filter(s => !deleted.has(s.id)));
     });
   };
 
-  // Load initial content & settings from API
+  // Load initial content & settings from authoritative source with safe cache revalidation
   const refreshContent = async () => {
     try {
       const deleted = getDeletedIds();
       const timestamp = Date.now();
-      const [deletedIdsRes, releaseRes, settingsRes, historyRes, watchlistRes, notifsRes, likesRes] = await Promise.all([
-        fetch(`/api/deleted-ids?_t=${timestamp}`).then(r => r.json()).catch(() => []),
+      const [authoritativeDeletedIds, releaseRes, settingsRes, historyRes, watchlistRes, notifsRes, likesRes] = await Promise.all([
+        fetchAuthoritativeDeletedIds().catch(() => []),
         fetchActiveRelease(),
-        fetch(`/api/settings?_t=${timestamp}`).then(r => r.json()).catch(() => null),
-        fetch(`/api/history?userId=${currentUser.id}&_t=${timestamp}`).then(r => r.json()).catch(() => []),
-        fetch(`/api/watchlist?userId=${currentUser.id}&_t=${timestamp}`).then(r => r.json()).catch(() => []),
-        fetch(`/api/notifications?_t=${timestamp}`).then(r => r.json()).catch(() => []),
-        fetch(`/api/likes?userId=${currentUser.id}&_t=${timestamp}`).then(r => r.json()).catch(() => [])
+        fetch(resolveApiUrl(`/api/settings?_t=${timestamp}`)).then(r => r.json()).catch(() => null),
+        fetch(resolveApiUrl(`/api/history?userId=${currentUser.id}&_t=${timestamp}`)).then(r => r.json()).catch(() => []),
+        fetch(resolveApiUrl(`/api/watchlist?userId=${currentUser.id}&_t=${timestamp}`)).then(r => r.json()).catch(() => []),
+        fetch(resolveApiUrl(`/api/notifications?_t=${timestamp}`)).then(r => r.json()).catch(() => []),
+        fetch(resolveApiUrl(`/api/likes?userId=${currentUser.id}&_t=${timestamp}`)).then(r => r.json()).catch(() => [])
       ]);
 
-      if (Array.isArray(deletedIdsRes) && deletedIdsRes.length > 0) {
-        deletedIdsRes.forEach(id => deleted.add(id));
+      if (Array.isArray(authoritativeDeletedIds) && authoritativeDeletedIds.length > 0) {
+        authoritativeDeletedIds.forEach(id => deleted.add(id));
         try { localStorage.setItem('piflix_deleted_content_ids', JSON.stringify(Array.from(deleted))); } catch {}
       }
 
       // If authoritative release is available, adopt it directly as canonical source
       if (releaseRes && releaseRes.releaseId && Array.isArray(releaseRes.movies)) {
+        // Safe cache invalidation / revalidation:
+        const cachedReleaseId = localStorage.getItem('piflix_current_release_id');
+        const cachedRevision = localStorage.getItem('piflix_current_release_revision');
+        const isStale = cachedReleaseId !== releaseRes.releaseId ||
+                        Number(cachedRevision) !== releaseRes.revision ||
+                        (Array.isArray(releaseRes.deletedContentIds) && releaseRes.deletedContentIds.some(id => !deleted.has(id)));
+
+        if (isStale) {
+          try {
+            localStorage.removeItem('piflix_cached_movies');
+            localStorage.removeItem('piflix_cached_series');
+          } catch {}
+        }
+
         applyPublishedRelease(releaseRes);
+
+        // Development diagnostic logging (Requirement Step 8)
+        console.info('[PiFlix Catalog Sync]', {
+          source: 'Authoritative Published Release',
+          releaseId: releaseRes.releaseId,
+          revision: releaseRes.revision,
+          moviesCount: releaseRes.counts?.movies ?? releaseRes.movies.length,
+          seriesCount: releaseRes.counts?.series ?? releaseRes.series.length,
+          environment: typeof window !== 'undefined' && window.location.hostname.includes('pinet.com') ? 'Pi Browser (PiNet)' : 'Normal Web',
+          cacheStatus: isStale ? 'INVALIDATED_AND_REVALIDATED' : 'CONSISTENT'
+        });
       } else {
         // Fallback to /api/movies and /api/series if no release was packaged yet
         const [moviesRes, seriesRes] = await Promise.all([
-          fetch(`/api/movies?_t=${timestamp}`).then(r => r.json()).catch(() => []),
-          fetch(`/api/series?_t=${timestamp}`).then(r => r.json()).catch(() => [])
+          fetch(resolveApiUrl(`/api/movies?_t=${timestamp}`)).then(r => r.json()).catch(() => []),
+          fetch(resolveApiUrl(`/api/series?_t=${timestamp}`)).then(r => r.json()).catch(() => [])
         ]);
-        if (Array.isArray(moviesRes) && moviesRes.length > 0) {
-          const cleanMovies = sortNewestFirst(moviesRes.filter(m => !deleted.has(m.id)).map(m => ({
+        if (Array.isArray(moviesRes)) {
+          const cleanMovies = sortNewestFirst(moviesRes.filter((m: Movie) => !deleted.has(m.id)).map((m: any) => ({
             ...m,
             genre: ensureGenreArray(m.genre, 'Action')
           })));
           setMovies(cleanMovies);
           try { localStorage.setItem('piflix_cached_movies', JSON.stringify(cleanMovies)); } catch {}
         }
-        if (Array.isArray(seriesRes) && seriesRes.length > 0) {
-          const cleanSeries = sortNewestFirst(seriesRes.filter(s => !deleted.has(s.id)).map(s => ({
+        if (Array.isArray(seriesRes)) {
+          const cleanSeries = sortNewestFirst(seriesRes.filter((s: TVSeries) => !deleted.has(s.id)).map((s: any) => ({
             ...s,
             genre: ensureGenreArray(s.genre, 'Drama')
           })));
@@ -896,7 +936,37 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           }
         });
         if (changed) {
-          try { localStorage.setItem('piflix_deleted_content_ids', JSON.stringify(Array.from(deletedSet))); } catch {}
+          try {
+            localStorage.setItem('piflix_deleted_content_ids', JSON.stringify(Array.from(deletedSet)));
+            const rawM = localStorage.getItem('piflix_cached_movies');
+            if (rawM) {
+              const parsedM = JSON.parse(rawM);
+              if (Array.isArray(parsedM)) {
+                localStorage.setItem('piflix_cached_movies', JSON.stringify(parsedM.filter((m: any) => !deletedSet.has(m.id))));
+              }
+            }
+            const rawS = localStorage.getItem('piflix_cached_series');
+            if (rawS) {
+              const parsedS = JSON.parse(rawS);
+              if (Array.isArray(parsedS)) {
+                localStorage.setItem('piflix_cached_series', JSON.stringify(parsedS.filter((s: any) => !deletedSet.has(s.id))));
+              }
+            }
+            const rawRel = localStorage.getItem('piflix_active_release');
+            if (rawRel) {
+              const parsedRel = JSON.parse(rawRel);
+              if (parsedRel && Array.isArray(parsedRel.movies)) {
+                parsedRel.movies = parsedRel.movies.filter((m: any) => !deletedSet.has(m.id));
+                parsedRel.series = (parsedRel.series || []).filter((s: any) => !deletedSet.has(s.id));
+                parsedRel.counts = {
+                  ...parsedRel.counts,
+                  movies: parsedRel.movies.length,
+                  series: parsedRel.series.length
+                };
+                localStorage.setItem('piflix_active_release', JSON.stringify(parsedRel));
+              }
+            }
+          } catch {}
           setMovies(prev => prev.filter(m => !deletedSet.has(m.id)));
           setSeriesList(prev => prev.filter(s => !deletedSet.has(s.id)));
           setCurrentRelease(prev => {
@@ -1019,9 +1089,63 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return false;
   };
 
-  // User switching data isolation: Load user-specific watchlist, history, and likes whenever currentUser.id changes
+  // User switching data isolation: Load user-specific watchlist, history, likes, and profileEmoji whenever currentUser.id changes
   useEffect(() => {
     if (!currentUser?.id) return;
+
+    // User profile emoji resolution & isolation:
+    const userSpecificKey = `piflix_user_emoji_${currentUser.id}`;
+    const piUserKey = currentUser.piUserId ? `piflix_user_emoji_${currentUser.piUserId}` : null;
+    const cachedEmoji = localStorage.getItem(userSpecificKey) || (piUserKey ? localStorage.getItem(piUserKey) : null);
+
+    if (cachedEmoji) {
+      if (currentUser.profileEmoji !== cachedEmoji) {
+        setCurrentUser(prev => ({
+          ...prev,
+          profileEmoji: cachedEmoji,
+          profileImage: cachedEmoji
+        }));
+      }
+    } else if (currentUser.profileEmoji) {
+      localStorage.setItem(userSpecificKey, currentUser.profileEmoji);
+      if (piUserKey) localStorage.setItem(piUserKey, currentUser.profileEmoji);
+    } else {
+      // Check if this user has a saved profileEmoji in Firestore or server
+      const userDocRef = doc(db, 'users', currentUser.id);
+      getDoc(userDocRef).then((snap) => {
+        if (snap.exists() && snap.data()?.profileEmoji) {
+          const savedEmoji = snap.data().profileEmoji;
+          localStorage.setItem(userSpecificKey, savedEmoji);
+          if (piUserKey) localStorage.setItem(piUserKey, savedEmoji);
+          setCurrentUser(prev => ({
+            ...prev,
+            profileEmoji: savedEmoji,
+            profileImage: savedEmoji
+          }));
+        } else {
+          // First-time Pi User: set default to 🐼, persist it to that user's profile, display 🐼
+          const defaultEmoji = '🐼';
+          localStorage.setItem(userSpecificKey, defaultEmoji);
+          if (piUserKey) localStorage.setItem(piUserKey, defaultEmoji);
+          setCurrentUser(prev => ({
+            ...prev,
+            profileEmoji: defaultEmoji,
+            profileImage: (prev.profileImage && !prev.profileImage.startsWith('http') && prev.profileImage.length <= 4) ? prev.profileImage : defaultEmoji
+          }));
+          fetch('/api/user/emoji', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ userId: currentUser.id, emoji: defaultEmoji })
+          }).catch(() => {});
+          setDoc(userDocRef, { profileEmoji: defaultEmoji }, { merge: true }).catch(() => {});
+        }
+      }).catch(() => {
+        if (!currentUser.profileEmoji) {
+          setCurrentUser(prev => ({ ...prev, profileEmoji: '🐼' }));
+        }
+      });
+    }
+
     const fetchUserData = async () => {
       try {
         const [histRes, watchRes, likesRes] = await Promise.all([
@@ -1038,6 +1162,46 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
     fetchUserData();
   }, [currentUser?.id]);
+
+  const updateProfileEmoji = async (newEmoji: string) => {
+    if (!currentUser?.id) return;
+    const cleanEmoji = newEmoji.trim();
+    const updatedUser: User = {
+      ...currentUser,
+      profileEmoji: cleanEmoji,
+      profileImage: cleanEmoji
+    };
+
+    // 1. Immediately update active user state (Navbar button and profile panel update immediately)
+    setCurrentUser(updatedUser);
+
+    // 2. Persist to isolated user-specific local storage cache
+    const userSpecificKey = `piflix_user_emoji_${currentUser.id}`;
+    localStorage.setItem(userSpecificKey, cleanEmoji);
+    if (currentUser.piUserId) {
+      localStorage.setItem(`piflix_user_emoji_${currentUser.piUserId}`, cleanEmoji);
+    }
+    localStorage.setItem('piflix_current_user', JSON.stringify(updatedUser));
+
+    // 3. Persist to server store via API
+    try {
+      await fetch('/api/user/emoji', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: currentUser.id, emoji: cleanEmoji })
+      });
+    } catch (err) {
+      console.warn('Notice saving emoji to server:', err);
+    }
+
+    // 4. Persist to Firestore directly for authenticated user resilience
+    try {
+      const userDocRef = doc(db, 'users', currentUser.id);
+      await setDoc(userDocRef, { profileEmoji: cleanEmoji, profileImage: cleanEmoji }, { merge: true });
+    } catch (fsErr) {
+      console.warn('Notice saving profileEmoji to Firestore:', fsErr);
+    }
+  };
 
   const logout = () => {
     localStorage.removeItem('piflix_pi_access_token');
@@ -1274,6 +1438,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         updateSettings,
         currentUser,
         setCurrentUser,
+        updateProfileEmoji,
         login,
         logout,
         isAdmin,

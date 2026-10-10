@@ -6,6 +6,7 @@ interface UserAvatarProps {
     username?: string;
     piUsername?: string;
     profileImage?: string;
+    profileEmoji?: string;
   } | null;
   sizeClass?: string;
   textClass?: string;
@@ -23,6 +24,7 @@ export const UserAvatar: React.FC<UserAvatarProps> = ({
   const [imageError, setImageError] = useState(false);
   const identifier = getVisiblePiUsername(user);
   const profileImage = user?.profileImage;
+  const profileEmoji = (user as any)?.profileEmoji;
 
   const hasValidCustomImage = !imageError && isCustomImageUrl(profileImage);
 
@@ -37,10 +39,14 @@ export const UserAvatar: React.FC<UserAvatarProps> = ({
     );
   }
 
-  // Fallback to deterministic emoji avatar
-  const emoji = (profileImage && !profileImage.startsWith('http') && profileImage.length <= 4)
-    ? profileImage
-    : getDeterministicEmoji(identifier);
+  // Priority for emoji avatar:
+  // 1. Authenticated user's saved personal profileEmoji
+  // 2. profileImage if stored as unicode emoji string
+  // 3. '🐼' initial default panda (never random for first-time users)
+  const emoji = profileEmoji
+    || ((profileImage && !profileImage.startsWith('http') && profileImage.length <= 4)
+      ? profileImage
+      : '🐼');
 
   return (
     <span

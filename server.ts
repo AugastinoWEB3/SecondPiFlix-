@@ -13,6 +13,7 @@ import util from 'util';
 import { createServer as createViteServer } from 'vite';
 import { initialSettings, defaultUsers, sampleMovies, sampleSeries, sampleSeasons, sampleEpisodes, sampleAds } from './src/data/mockData';
 import { Movie, TVSeries, Season, Episode, User, WatchHistoryItem, WatchlistItem, LikedItem, ContentRatingReview, Subscription, PaymentRecord, AppSettings, AppNotification, ContentItem, VisitorRecord, PublishedRelease } from './src/types';
+import { sortReviewsNewestFirst } from './src/lib/reviews';
 import { getEmailStatus, getAllMessages, syncMailbox, sendReply, setMessageReadStatus } from './server/supportEmail';
 import { initializeApp as initFirebaseApp, getApps as getFirebaseApps } from 'firebase/app';
 import {
@@ -24,6 +25,7 @@ import {
   setDoc as firestoreSetDoc,
   deleteDoc as firestoreDeleteDoc,
   onSnapshot as firestoreOnSnapshot,
+  serverTimestamp as firestoreServerTimestamp,
   Firestore
 } from 'firebase/firestore';
 
@@ -65,7 +67,8 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+  res.header('Access-Control-Allow-Headers', '*');
+  res.header('Access-Control-Max-Age', '86400');
   if (req.method === 'OPTIONS') {
     return res.sendStatus(204);
   }
@@ -839,12 +842,15 @@ function publishAuthoritativeRelease(publishedBy = 'Admin'): PublishedRelease {
   if (firestoreDb) {
     try {
       const releaseDocRef = firestoreDoc(firestoreCollection(firestoreDb, 'releases'), 'current');
-      firestoreSetDoc(releaseDocRef, newRelease, { merge: true }).catch(err => {
+      firestoreSetDoc(releaseDocRef, newRelease).catch(err => {
         console.warn('[Firestore Release Sync Warning]:', err);
       });
 
+      const pubRelDocRef = firestoreDoc(firestoreCollection(firestoreDb, 'published_releases'), 'current');
+      firestoreSetDoc(pubRelDocRef, newRelease).catch(() => {});
+
       const snapshotDocRef = firestoreDoc(firestoreCollection(firestoreDb, 'published_snapshots'), newRelease.releaseId);
-      firestoreSetDoc(snapshotDocRef, newRelease, { merge: true }).catch(() => {});
+      firestoreSetDoc(snapshotDocRef, newRelease).catch(() => {});
     } catch (fsErr) {
       console.warn('[Firestore Release Setup Error]:', fsErr);
     }
@@ -895,11 +901,11 @@ function syncActiveReleaseState(publishedBy = 'Admin Auto-Sync'): PublishedRelea
   if (firestoreDb) {
     try {
       const releaseDocRef = firestoreDoc(firestoreCollection(firestoreDb, 'releases'), 'current');
-      firestoreSetDoc(releaseDocRef, activeRelease, { merge: true }).catch(() => {});
+      firestoreSetDoc(releaseDocRef, activeRelease).catch(() => {});
       const pubRelDocRef = firestoreDoc(firestoreCollection(firestoreDb, 'published_releases'), 'current');
-      firestoreSetDoc(pubRelDocRef, activeRelease, { merge: true }).catch(() => {});
+      firestoreSetDoc(pubRelDocRef, activeRelease).catch(() => {});
       const snapshotDocRef = firestoreDoc(firestoreCollection(firestoreDb, 'published_snapshots'), releaseId);
-      firestoreSetDoc(snapshotDocRef, activeRelease, { merge: true }).catch(() => {});
+      firestoreSetDoc(snapshotDocRef, activeRelease).catch(() => {});
     } catch (fsErr) {
       console.warn('[Firestore syncActiveReleaseState Warning]:', fsErr);
     }
@@ -959,6 +965,13 @@ function loadUsersStore(): User[] {
           }
           if (u.piUsername && isUuidOrInternalId(u.piUsername)) {
             u.piUsername = undefined;
+          }
+          if (!u.profileEmoji) {
+            if (u.profileImage && !u.profileImage.startsWith('http') && u.profileImage.length <= 4) {
+              u.profileEmoji = u.profileImage;
+            } else {
+              u.profileEmoji = '🐼';
+            }
           }
         }
         console.info(`[UsersStore] Loaded ${merged.length} users from persistent store.`);
@@ -1492,7 +1505,7 @@ async function syncLikeToFirestore(like: LikedItem, deleted = false) {
   }
 }
 
-async function syncReviewToFirestore(review: ContentRatingReview, deleted = false) {
+async function syncReviewToFirestore(review: ContentRatingReview, deleted = false, isUpdate = false) {
   if (!firestoreDb) return;
   try {
     const docKey = `${review.id}`.replace(/[^a-zA-Z0-9_-]/g, '_');
@@ -1500,7 +1513,19 @@ async function syncReviewToFirestore(review: ContentRatingReview, deleted = fals
     if (deleted) {
       await firestoreDeleteDoc(docRef);
     } else {
-      const cleanReview = JSON.parse(JSON.stringify(review));
+      const cleanReview: Record<string, any> = {};
+      for (const [key, val] of Object.entries(review)) {
+        if (val !== undefined && val !== null) {
+          cleanReview[key] = val;
+        }
+      }
+      if (isUpdate) {
+        cleanReview.updatedAt = review.updatedAt || new Date().toISOString();
+        cleanReview.serverUpdatedAt = firestoreServerTimestamp();
+      } else {
+        cleanReview.createdAt = review.createdAt || new Date().toISOString();
+        cleanReview.serverCreatedAt = firestoreServerTimestamp();
+      }
       await firestoreSetDoc(docRef, cleanReview, { merge: true });
     }
   } catch (err) {
@@ -2118,6 +2143,30 @@ app.post('/api/admin/publish', verifyAdmin, (req: Request, res: Response) => {
   res.setHeader('Expires', '0');
 
   const publishedBy = (req as any).adminUser?.email || (req as any).user?.username || req.body?.publishedBy || 'Admin';
+
+  // 1. Absorb any deleted IDs sent in the publish request
+  if (Array.isArray(req.body?.deletedIds)) {
+    req.body.deletedIds.forEach((id: string) => {
+      deletedContentIds.add(id);
+      catalogMoviesMap.delete(id);
+      catalogSeriesMap.delete(id);
+    });
+  }
+
+  // 2. Synchronize current catalog state if sent by admin client
+  if (Array.isArray(req.body?.currentMovies)) {
+    movies = req.body.currentMovies.filter((m: any) => !deletedContentIds.has(m.id));
+    catalogMoviesMap.clear();
+    movies.forEach(m => catalogMoviesMap.set(m.id, m));
+  }
+  if (Array.isArray(req.body?.currentSeries)) {
+    seriesList = req.body.currentSeries.filter((s: any) => !deletedContentIds.has(s.id));
+    catalogSeriesMap.clear();
+    seriesList.forEach(s => catalogSeriesMap.set(s.id, s));
+  }
+
+  saveContentStore();
+
   const newRelease = publishAuthoritativeRelease(publishedBy);
 
   res.json({
@@ -2353,8 +2402,14 @@ app.post(['/api/auth/pi', '/api/auth/pi/verify'], async (req: Request, res: Resp
       if (piUid) {
         user.piUserId = piUid;
       }
-      if (!user.profileImage || user.profileImage.includes('unsplash') || user.profileImage.includes('dicebear') || user.profileImage.includes('bottts')) {
-        user.profileImage = getDeterministicEmoji(piUsername || user.username);
+      // Preserve existing profileEmoji; if user has no saved profileEmoji, set initial default 🐼
+      if (user.profileEmoji) {
+        // Retain saved emoji
+      } else if (user.profileImage && !user.profileImage.startsWith('http') && user.profileImage.length <= 4) {
+        user.profileEmoji = user.profileImage;
+      } else {
+        user.profileEmoji = '🐼';
+        user.profileImage = '🐼';
       }
     } else {
       const validDisplayName = piUsername || 'Pioneer';
@@ -2362,7 +2417,8 @@ app.post(['/api/auth/pi', '/api/auth/pi/verify'], async (req: Request, res: Resp
         id: `usr_pi_${piUid || Date.now()}`,
         username: validDisplayName,
         email: `${(piUsername || 'pioneer').toLowerCase().replace(/[^a-z0-9]/g, '')}@pioneer.network`,
-        profileImage: getDeterministicEmoji(validDisplayName),
+        profileImage: '🐼',
+        profileEmoji: '🐼',
         role: 'user',
         premiumStatus: false,
         subscriptionPlan: 'free',
@@ -3505,6 +3561,9 @@ app.delete('/api/content/:id', verifyAdmin, async (req: Request, res: Response) 
     activeRelease.episodes = activeRelease.episodes ? activeRelease.episodes.filter(e => e.seriesId !== id) : [];
     activeRelease.seasons = activeRelease.seasons ? activeRelease.seasons.filter(sn => sn.seriesId !== id) : [];
     activeRelease.deletedContentIds = Array.from(deletedContentIds);
+    activeRelease.revision = (activeRelease.revision || 1) + 1;
+    activeRelease.releaseId = `rel_${Date.now()}_authoritative`;
+    activeRelease.publishedAt = new Date().toISOString();
     activeRelease.counts = {
       movies: activeRelease.movies.length,
       series: activeRelease.series.length,
@@ -3515,8 +3574,13 @@ app.delete('/api/content/:id', verifyAdmin, async (req: Request, res: Response) 
 
     if (firestoreDb) {
       try {
+        deleteContentItemFromFirestore(id).catch(() => {});
         const releaseDocRef = firestoreDoc(firestoreCollection(firestoreDb, 'releases'), 'current');
-        firestoreSetDoc(releaseDocRef, activeRelease, { merge: true }).catch(() => {});
+        firestoreSetDoc(releaseDocRef, activeRelease).catch(() => {});
+        const pubRelDocRef = firestoreDoc(firestoreCollection(firestoreDb, 'published_releases'), 'current');
+        firestoreSetDoc(pubRelDocRef, activeRelease).catch(() => {});
+        const snapshotDocRef = firestoreDoc(firestoreCollection(firestoreDb, 'published_snapshots'), activeRelease.releaseId);
+        firestoreSetDoc(snapshotDocRef, activeRelease).catch(() => {});
       } catch {}
     }
   }
@@ -4314,14 +4378,14 @@ app.post('/api/watchlist/toggle', (req: Request, res: Response) => {
 app.get('/api/reviews/:contentId', (req: Request, res: Response) => {
   const contentId = req.params.contentId;
   const contentReviews = reviews
-    .filter(r => r.contentId === contentId && r.approved !== false)
-    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-  res.json(contentReviews);
+    .filter(r => r.contentId === contentId && r.approved !== false);
+  const sorted = sortReviewsNewestFirst(contentReviews);
+  res.json(sorted);
 });
 
 app.post('/api/reviews', async (req: Request, res: Response) => {
   try {
-    const { userId = 'usr_demo', username, userImage, contentId, rating, review } = req.body;
+    const { userId = 'usr_demo', username, userImage, profileEmoji, contentId, rating, review } = req.body;
     if (!contentId) {
       return res.status(400).json({ error: 'contentId is required' });
     }
@@ -4344,14 +4408,18 @@ app.post('/api/reviews', async (req: Request, res: Response) => {
     // Check if user already reviewed this content -> update existing review
     const existingIdx = reviews.findIndex(r => r.userId === userId && r.contentId === contentId);
     let targetReview: ContentRatingReview;
+    let isUpdate = false;
 
     if (existingIdx > -1) {
+      isUpdate = true;
       targetReview = {
         ...reviews[existingIdx],
         rating: Math.round(numRating),
         review: safeReviewText,
         username: safeUsername,
         userImage: userImage || reviews[existingIdx].userImage,
+        profileEmoji: profileEmoji || reviews[existingIdx].profileEmoji,
+        updatedAt: nowIso, // strictly preserve original createdAt!
         approved: true
       };
       reviews[existingIdx] = targetReview;
@@ -4361,6 +4429,7 @@ app.post('/api/reviews', async (req: Request, res: Response) => {
         userId,
         username: safeUsername,
         userImage,
+        profileEmoji,
         contentId,
         rating: Math.round(numRating),
         review: safeReviewText,
@@ -4377,7 +4446,7 @@ app.post('/api/reviews', async (req: Request, res: Response) => {
 
     saveInteractionsStore();
     saveContentStore();
-    syncReviewToFirestore(targetReview).catch(() => {});
+    syncReviewToFirestore(targetReview, false, isUpdate).catch(() => {});
 
     return res.json({
       success: true,
@@ -5240,6 +5309,53 @@ app.post('/api/user/language', (req: Request, res: Response) => {
     syncUserToFirestore(user).catch(() => {});
   }
   res.json({ success: true, userId, language });
+});
+
+app.post('/api/user/emoji', async (req: Request, res: Response) => {
+  try {
+    const { userId, emoji } = req.body;
+    if (!userId || !emoji || typeof emoji !== 'string') {
+      return res.status(400).json({ success: false, error: 'Missing userId or emoji' });
+    }
+
+    const cleanEmoji = emoji.trim();
+    let user = users.find(u =>
+      u.id === userId ||
+      u.piUserId === userId ||
+      (u.piUsername && u.piUsername.toLowerCase() === userId.toLowerCase())
+    );
+
+    if (user) {
+      user.profileEmoji = cleanEmoji;
+      user.profileImage = cleanEmoji;
+      saveUsersStore();
+      syncUserToFirestore(user).catch(() => {});
+      return res.json({ success: true, userId: user.id, profileEmoji: cleanEmoji, user });
+    }
+
+    if (firestoreDb) {
+      const userRef = firestoreDoc(firestoreDb, 'users', userId);
+      await firestoreSetDoc(userRef, { profileEmoji: cleanEmoji, profileImage: cleanEmoji }, { merge: true }).catch(() => {});
+    }
+
+    return res.json({ success: true, userId, profileEmoji: cleanEmoji });
+  } catch (err: any) {
+    console.error('[API User Emoji] Error saving user emoji:', err);
+    return res.status(500).json({ success: false, error: err.message || 'Failed to save emoji' });
+  }
+});
+
+app.get('/api/user/:userId', (req: Request, res: Response) => {
+  const userId = req.params.userId;
+  const user = users.find(u =>
+    u.id === userId ||
+    u.piUserId === userId ||
+    (u.piUsername && u.piUsername.toLowerCase() === userId.toLowerCase())
+  );
+  if (!user) {
+    return res.status(404).json({ success: false, error: 'User not found' });
+  }
+  return res.json({ success: true, user });
 });
 
 app.post('/api/admin/users/:id/toggle-premium', verifyAdmin, (req: Request, res: Response) => {
