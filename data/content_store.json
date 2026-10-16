@@ -1,5 +1,70 @@
 {
-  "movies": [],
+  "movies": [
+    {
+      "id": "m-1791598582763",
+      "title": "SAKRA (2023)",
+      "description": "Kiu Fung is a martial arts master whose power and reputation have earned him the respect of his peers.\n\nBut when several murders are attributed to him, everything crumbles. His former allies turn against him, and the once-respected warrior becomes a hunted man.\n\nDetermined to clear his name, Kiu Fung embarks on a quest that will lead him through a world of rival clans, formidable fighters, and buried secrets.\n\nFor behind the accusations lies a deeper truth. His own origins are shrouded in mystery, and enemies are working in the shadows to bring about his downfall.",
+      "poster": "https://i.postimg.cc/nLzr2g9F/images-(1)-(24).jpg",
+      "backdrop": "https://i.postimg.cc/nLzr2g9F/images-(1)-(24).jpg",
+      "coverImageUrl": "https://i.postimg.cc/nLzr2g9F/images-(1)-(24).jpg",
+      "trailerUrl": "",
+      "videoUrl": "https://youtu.be/m3l9jljgX4g?si=hTP34V8V3SKZWvcT",
+      "year": 2026,
+      "duration": 95,
+      "genre": [
+        "Action"
+      ],
+      "language": "English",
+      "country": "International",
+      "director": "Creator",
+      "cast": [],
+      "rating": 9,
+      "ageClassification": "PG-13",
+      "isPremium": false,
+      "accessType": "free",
+      "isFeatured": false,
+      "isTrending": true,
+      "isPublished": true,
+      "published": true,
+      "qualityBadge": "HD",
+      "viewsCount": 0,
+      "likesCount": 0,
+      "createdAt": "2026-10-10T02:18:00.015Z",
+      "updatedAt": "2026-10-10T02:18:02.170Z"
+    },
+    {
+      "id": "m-1791733440487",
+      "title": "MISS GRAND INTERNATIONAL 2026",
+      "description": "🔴 LIVE   (Recorded )- MGI 2026 𝐆𝐫𝐚𝐧𝐝 𝐅𝐢𝐧𝐚𝐥 at MGI Hall, Bangkok\n\nMISS GRAND INTERNATIONAL 2026\nJIHAN MOHIN DIMACHK 🇹🇿\nTHIS TIME FOR AFRICA. THIS TIME FOR TANZANIA. 🇹🇿👑\n\nThe firstever African queen to be crowned Miss Grand International. HISTORY IS MADE! 🌍✨\n\n#MissGrandInternational2026\n#MissGrandInternational\n\n#MGI2026​ #MGI​ \n#GrandExperiences​\n#MissGrandInternational​",
+      "poster": "https://i.postimg.cc/SRzGjrWM/instagram-De-Ujxb-Kg-SIG-3.jpg",
+      "backdrop": "https://i.postimg.cc/SRzGjrWM/instagram-De-Ujxb-Kg-SIG-3.jpg",
+      "coverImageUrl": "https://i.postimg.cc/SRzGjrWM/instagram-De-Ujxb-Kg-SIG-3.jpg",
+      "trailerUrl": "",
+      "videoUrl": "https://www.youtube.com/live/Ejcg8DraRMI?si=Oi3ngSMlj_LW2IGA",
+      "year": 2026,
+      "duration": 95,
+      "genre": [
+        "Fashion"
+      ],
+      "language": "English",
+      "country": "International",
+      "director": "Creator",
+      "cast": [],
+      "rating": 8.5,
+      "ageClassification": "PG-13",
+      "isPremium": false,
+      "accessType": "free",
+      "isFeatured": false,
+      "isTrending": true,
+      "isPublished": true,
+      "published": true,
+      "qualityBadge": "HD",
+      "viewsCount": 0,
+      "likesCount": 0,
+      "createdAt": "2026-10-11T15:49:20.469Z",
+      "updatedAt": "2026-10-11T15:49:23.604Z"
+    }
+  ],
   "seriesList": [
     {
       "id": "s-1789324622815",
@@ -18,7 +83,7 @@
       "country": "International",
       "director": "Creator",
       "cast": [],
-      "rating": 9.8,
+      "rating": 9.5,
       "ageClassification": "PG-13",
       "isPremium": true,
       "accessType": "premium",
@@ -28,10 +93,41 @@
       "published": true,
       "qualityBadge": "HD",
       "viewsCount": 0,
-      "likesCount": 1,
+      "likesCount": 2,
       "seasonsCount": 1,
       "createdAt": "2026-09-13T19:25:17.381Z",
-      "updatedAt": "2026-09-29T17:55:26.338Z"
+      "updatedAt": "2026-10-10T05:36:50.566Z"
+    },
+    {
+      "id": "s-1791613643033",
+      "title": "Pi Network",
+      "description": "The First Digital Currency You Can Mine on Your Phone. Start mining Pi cryptocurrency today with our free, energy light mobile app!\n\n@ Pi core team",
+      "poster": "https://i.postimg.cc/dQfWYNMB/file-00000000dfb8820882fb13655a30ed03.png",
+      "backdrop": "https://i.postimg.cc/dQfWYNMB/file-00000000dfb8820882fb13655a30ed03.png",
+      "coverImageUrl": "https://i.postimg.cc/dQfWYNMB/file-00000000dfb8820882fb13655a30ed03.png",
+      "trailerUrl": "",
+      "year": 2026,
+      "genre": [
+        "Blockchain"
+      ],
+      "language": "English",
+      "country": "International",
+      "director": "Creator",
+      "cast": [],
+      "rating": 8.5,
+      "ageClassification": "PG-13",
+      "isPremium": false,
+      "accessType": "free",
+      "isFeatured": false,
+      "isTrending": true,
+      "isPublished": true,
+      "published": true,
+      "qualityBadge": "HD",
+      "viewsCount": 0,
+      "likesCount": 0,
+      "seasonsCount": 1,
+      "createdAt": "2026-10-10T06:32:48.647Z",
+      "updatedAt": "2026-10-11T14:28:03.031Z"
     }
   ],
   "seasonsList": [
@@ -41,7 +137,15 @@
       "seasonNumber": 1,
       "seasonName": "Season 1",
       "title": "Season 1",
-      "episodesCount": 7
+      "episodesCount": 8
+    },
+    {
+      "id": "sn-temp-1",
+      "seriesId": "s-1791613643033",
+      "seasonNumber": 1,
+      "seasonName": "Videos Collection",
+      "title": "Videos Collection",
+      "episodesCount": 1
     }
   ],
   "episodesList": [
@@ -149,6 +253,36 @@
       "duration": 45,
       "skipIntroSec": 15,
       "createdAt": "2026-09-13T19:25:17.381Z"
+    },
+    {
+      "id": "ep-s-1789324622815-s1-1791610547782-8",
+      "seriesId": "s-1789324622815",
+      "seasonId": "sn-s-1789324622815-1",
+      "seasonNumber": 1,
+      "seasonName": "Season 1",
+      "episodeNumber": 8,
+      "title": "CHAPTER VIII & IX",
+      "description": "",
+      "thumbnail": "https://i.postimg.cc/B6WCvPgw/file-00000000aec88211a592889e2afb0e3c.png",
+      "videoUrl": "https://youtu.be/7nsBRiFosW0?si=qhlxn16UlVtsOtG7",
+      "duration": 45,
+      "skipIntroSec": 15,
+      "createdAt": "2026-09-13T19:25:17.381Z"
+    },
+    {
+      "id": "ep-temp-s1-1",
+      "seriesId": "s-1791613643033",
+      "seasonId": "sn-temp-1",
+      "seasonNumber": 1,
+      "seasonName": "Videos Collection",
+      "episodeNumber": 1,
+      "title": "INTRO VIDEO",
+      "description": "The journey begins.",
+      "thumbnail": "https://i.postimg.cc/dQfWYNMB/file-00000000dfb8820882fb13655a30ed03.png",
+      "videoUrl": "https://youtu.be/MsOaC61cR3U?si=iIuvxHoIdJgGYuBp",
+      "duration": 45,
+      "skipIntroSec": 15,
+      "createdAt": "2026-10-10T06:32:48.647Z"
     }
   ],
   "deletedContentIds": [
@@ -173,6 +307,9 @@
     "sn-dynasty-1",
     "sn-quantum-1",
     "m-1789841752562",
-    "m-1790308733046"
+    "m-1790308733046",
+    "m-1791597732816",
+    "m-1791598053037",
+    "m-1791653927152"
   ]
 }

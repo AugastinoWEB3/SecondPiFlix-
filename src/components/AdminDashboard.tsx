@@ -60,7 +60,6 @@ export const AdminDashboard: React.FC = () => {
     adminToken,
     adminLogin,
     adminLoginGoogle,
-    adminRegister,
     adminLogout,
     firebaseAdminUser,
     currentRelease,
@@ -99,10 +98,8 @@ export const AdminDashboard: React.FC = () => {
   const [deleteSuccess, setDeleteSuccess] = useState<string | null>(null);
 
   // Admin Firebase Auth Screen state
-  const [authMode, setAuthMode] = useState<'signin' | 'register'>('signin');
   const [adminEmail, setAdminEmail] = useState('');
   const [adminPassword, setAdminPassword] = useState('');
-  const [adminPasswordConfirm, setAdminPasswordConfirm] = useState('');
   const [authError, setAuthError] = useState<string | null>(null);
   const [authSuccessNotice, setAuthSuccessNotice] = useState<string | null>(null);
   const [isAuthenticating, setIsAuthenticating] = useState(false);
@@ -281,31 +278,11 @@ export const AdminDashboard: React.FC = () => {
       return;
     }
 
-    if (authMode === 'register') {
-      if (adminPassword.length < 6) {
-        setAuthError('Password must be at least 6 characters long.');
-        return;
-      }
-      if (adminPassword !== adminPasswordConfirm) {
-        setAuthError('Passwords do not match.');
-        return;
-      }
-    }
-
     setIsAuthenticating(true);
     try {
-      if (authMode === 'register') {
-        const res = await adminRegister(adminEmail.trim(), adminPassword);
-        if (!res.success) {
-          setAuthError(res.error || 'Failed to create administrator account.');
-        } else {
-          setAuthSuccessNotice('Administrator account created and authenticated successfully!');
-        }
-      } else {
-        const result = await adminLogin(adminEmail.trim(), adminPassword);
-        if (!result.success) {
-          setAuthError(result.error || 'Invalid administrator credentials. Access restricted.');
-        }
+      const result = await adminLogin(adminEmail.trim(), adminPassword);
+      if (!result.success) {
+        setAuthError(result.error || 'Invalid administrator credentials. Access restricted.');
       }
     } catch (err: any) {
       setAuthError(err?.message || 'Authentication error occurred.');
@@ -1019,14 +996,14 @@ export const AdminDashboard: React.FC = () => {
       // Immediately update local application context & cached store for instant UI response
       updateContentItem(itemToSave);
 
-      // Refresh app public catalog
-      await refreshContent();
-      await loadAdminData();
+      // Publish new release with fresh catalog state and refresh app public catalog
       try {
         await publishRelease();
       } catch (pubErr) {
         console.warn('Auto-publish on save notice:', pubErr);
       }
+      await refreshContent();
+      await loadAdminData();
 
       setTimeout(() => {
         setIsModalOpen(false);
@@ -1210,32 +1187,6 @@ export const AdminDashboard: React.FC = () => {
             </p>
           </div>
 
-          {/* Mode Switcher: Sign In vs Register Account */}
-          <div className="flex rounded-xl bg-zinc-950 p-1 border border-zinc-800">
-            <button
-              type="button"
-              onClick={() => { setAuthMode('signin'); setAuthError(null); }}
-              className={`flex-1 py-2 text-xs font-bold rounded-lg transition ${
-                authMode === 'signin'
-                  ? 'bg-purple-600 text-white shadow-md shadow-purple-900/40'
-                  : 'text-zinc-400 hover:text-white'
-              }`}
-            >
-              Admin Sign In
-            </button>
-            <button
-              type="button"
-              onClick={() => { setAuthMode('register'); setAuthError(null); }}
-              className={`flex-1 py-2 text-xs font-bold rounded-lg transition ${
-                authMode === 'register'
-                  ? 'bg-purple-600 text-white shadow-md shadow-purple-900/40'
-                  : 'text-zinc-400 hover:text-white'
-              }`}
-            >
-              Create Admin Account
-            </button>
-          </div>
-
           {authError && (
             <div className="p-3.5 rounded-xl bg-red-950/70 border border-red-800/80 text-red-300 text-xs flex items-start gap-2.5">
               <AlertTriangle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
@@ -1289,7 +1240,7 @@ export const AdminDashboard: React.FC = () => {
                 required
                 value={adminEmail}
                 onChange={e => setAdminEmail(e.target.value)}
-                placeholder="frank.gwaza.fg@gmail.com"
+                placeholder="Enter administrator email"
                 className="w-full pl-3.5 pr-4 py-2.5 bg-zinc-950 border border-zinc-800 rounded-xl text-xs text-white placeholder:text-zinc-600 focus:outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500"
               />
             </div>
@@ -1306,20 +1257,6 @@ export const AdminDashboard: React.FC = () => {
               />
             </div>
 
-            {authMode === 'register' && (
-              <div className="space-y-1.5">
-                <label className="text-[11px] font-semibold text-zinc-300 tracking-wide uppercase">Confirm Password</label>
-                <input
-                  type="password"
-                  required
-                  value={adminPasswordConfirm}
-                  onChange={e => setAdminPasswordConfirm(e.target.value)}
-                  placeholder="Re-type password"
-                  className="w-full pl-3.5 pr-4 py-2.5 bg-zinc-950 border border-zinc-800 rounded-xl text-xs text-white placeholder:text-zinc-600 focus:outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500"
-                />
-              </div>
-            )}
-
             <button
               type="submit"
               disabled={isAuthenticating || isGoogleAuthenticating}
@@ -1333,18 +1270,15 @@ export const AdminDashboard: React.FC = () => {
               ) : (
                 <>
                   <KeyRound className="w-4 h-4" />
-                  <span>{authMode === 'register' ? 'Register & Verify Admin' : 'Sign In to Admin Dashboard'}</span>
+                  <span>Sign In to Admin Dashboard</span>
                 </>
               )}
             </button>
           </form>
 
-          <div className="pt-3 border-t border-zinc-800/80 text-center space-y-1">
-            <div className="text-[11px] text-zinc-400 font-medium">
-              Primary Super Administrator: <span className="text-purple-400">frank.gwaza.fg@gmail.com</span>
-            </div>
-            <div className="text-[10px] text-zinc-500">
-              Hardcoded demo passwords are removed. Production Firebase tokens are required.
+          <div className="pt-3 border-t border-zinc-800/80 text-center">
+            <div className="text-[11px] text-zinc-500 font-medium">
+              Authorized personnel only. All access attempts are verified.
             </div>
           </div>
         </div>
@@ -1533,124 +1467,6 @@ export const AdminDashboard: React.FC = () => {
       {/* ---------------------------------------------------------------------- */}
       {adminSection === 'content' && (
         <div className="space-y-4">
-          {/* Authoritative Catalog & Published Release Synchronization Bar (Requirements Steps 2, 3 & 4) */}
-          <div className="p-4 rounded-2xl bg-gradient-to-r from-zinc-900 via-zinc-900 to-zinc-950 border border-zinc-800 shadow-xl flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-            <div className="flex items-start sm:items-center gap-3">
-              <div className="p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 shrink-0">
-                <Globe className="w-5 h-5" />
-              </div>
-              <div className="space-y-1">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <span className="text-xs font-black text-white uppercase tracking-wider">Live Admin Catalog:</span>
-                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-purple-500/20 text-purple-300 border border-purple-500/30">
-                    {movies.length} Movies, {seriesList.length} Series
-                  </span>
-                  <span className="text-zinc-600">•</span>
-                  <span className="text-xs font-black text-zinc-300 uppercase tracking-wider">Active Published Release:</span>
-                  <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                    {currentRelease?.releaseId || 'Authoritative Active'}
-                  </span>
-                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
-                    Rev #{currentRelease?.revision || 1}
-                  </span>
-                </div>
-                <div className="text-[11px] text-zinc-400 flex items-center gap-2 flex-wrap">
-                  <span>
-                    Published Serving: <strong className="text-emerald-400">{(currentRelease?.counts?.movies ?? currentRelease?.movies?.length ?? 0)} Movies, {(currentRelease?.counts?.series ?? currentRelease?.series?.length ?? 0)} Series</strong> ({(currentRelease?.counts?.seasons ?? currentRelease?.seasons?.length ?? 0)} Seasons, {(currentRelease?.counts?.episodes ?? currentRelease?.episodes?.length ?? 0)} Episodes)
-                  </span>
-                  <span className="text-zinc-600">•</span>
-                  {movies.length === (currentRelease?.counts?.movies ?? currentRelease?.movies?.length ?? 0) && seriesList.length === (currentRelease?.counts?.series ?? currentRelease?.series?.length ?? 0) ? (
-                    <span className="inline-flex items-center gap-1 text-emerald-400 font-semibold">
-                      <CheckCircle2 className="w-3.5 h-3.5" />
-                      Synchronized (Normal Web & Pi Browser)
-                    </span>
-                  ) : (
-                    <span className="inline-flex items-center gap-1 text-amber-400 font-semibold">
-                      <AlertTriangle className="w-3.5 h-3.5" />
-                      Pending Changes: Live Catalog differs from Published Release — Click "Publish to Web & Pi" to sync
-                    </span>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-2 self-end lg:self-auto shrink-0">
-              <button
-                onClick={handlePublishRelease}
-                disabled={isPublishingRelease}
-                className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-black shadow-lg shadow-emerald-900/40 border border-emerald-400/40 transition disabled:opacity-50"
-                title="Publish current live catalog as authoritative snapshot to Web and Pi Network"
-              >
-                {isPublishingRelease ? (
-                  <>
-                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                    <span>Publishing...</span>
-                  </>
-                ) : (
-                  <>
-                    <Send className="w-3.5 h-3.5" />
-                    <span>Publish to Web & Pi</span>
-                  </>
-                )}
-              </button>
-            </div>
-          </div>
-
-          {/* Release Publish Success Banner */}
-          {publishSuccessInfo && (
-            <div className="p-4 rounded-2xl bg-emerald-950/60 border border-emerald-500/50 text-white shadow-2xl space-y-2">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
-                  <h4 className="text-xs font-black uppercase tracking-wide text-emerald-300">
-                    Release {publishSuccessInfo.releaseId} Published Successfully!
-                  </h4>
-                </div>
-                <button
-                  onClick={() => setPublishSuccessInfo(null)}
-                  className="text-zinc-400 hover:text-white p-1 rounded-lg hover:bg-zinc-800 transition"
-                  title="Dismiss banner"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-              <p className="text-xs text-zinc-300">
-                Both the standard web application and the Pi Network / Pi Browser environment (<span className="text-emerald-300 font-mono">apppiflixfat9963.pinet.com</span>) are now serving the exact same snapshot of <strong>{publishSuccessInfo.counts.movies} movies</strong> and <strong>{publishSuccessInfo.counts.series} series</strong> ({publishSuccessInfo.counts.seasons} seasons, {publishSuccessInfo.counts.episodes} episodes). All previously deleted content has been permanently purged across all connected clients.
-              </p>
-              <div className="flex items-center gap-3 text-[11px] text-emerald-200/80 pt-1 border-t border-emerald-800/40">
-                <span>Revision #{publishSuccessInfo.revision}</span>
-                <span>•</span>
-                <span>Timestamp: {new Date(publishSuccessInfo.publishedAt).toLocaleString()}</span>
-                <span>•</span>
-                <span>Published by: {publishSuccessInfo.publishedBy || 'Admin'}</span>
-              </div>
-            </div>
-          )}
-
-          {/* Release Publish Error Banner */}
-          {publishError && (
-            <div className="p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/40 text-rose-300 text-xs flex items-center justify-between gap-3 shadow-lg">
-              <div className="flex items-center gap-2">
-                <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
-                <span>{publishError}</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={handlePublishRelease}
-                  disabled={isPublishingRelease}
-                  className="px-2.5 py-1 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-bold text-[11px]"
-                >
-                  Retry
-                </button>
-                <button
-                  onClick={() => setPublishError(null)}
-                  className="text-rose-400 hover:text-white"
-                >
-                  <X className="w-3.5 h-3.5" />
-                </button>
-              </div>
-            </div>
-          )}
 
           {/* Filter & Search Bar (Requirement 19) */}
           <div className="p-4 rounded-2xl bg-zinc-900/80 border border-zinc-800 space-y-3">
@@ -2397,7 +2213,7 @@ export const AdminDashboard: React.FC = () => {
               </div>
               <div className="p-3 rounded-xl bg-zinc-950 border border-zinc-800">
                 <div className="text-[10px] uppercase font-bold text-zinc-500">Primary Super Admin</div>
-                <div className="text-xs font-semibold text-purple-400 mt-0.5 truncate">frank.gwaza.fg@gmail.com</div>
+                <div className="text-xs font-semibold text-purple-400 mt-0.5 truncate">{firebaseAdminUser?.email || currentUser?.email || 'Primary Super Administrator'}</div>
               </div>
               <div className="p-3 rounded-xl bg-zinc-950 border border-zinc-800">
                 <div className="text-[10px] uppercase font-bold text-zinc-500">Database Role Matcher</div>
@@ -2548,7 +2364,7 @@ export const AdminDashboard: React.FC = () => {
             </h4>
             <div className="text-xs text-zinc-400 space-y-2 leading-relaxed">
               <p>
-                1. <strong>Primary Owner Access:</strong> The account <code className="text-purple-300 bg-zinc-900 px-1 py-0.5 rounded">frank.gwaza.fg@gmail.com</code> is registered as the Primary Super Administrator. You can sign in using Google or by creating password credentials on the Administrator Gateway.
+                1. <strong>Primary Owner Access:</strong> The authorized administrator account is verified with Firebase Authentication. You can sign in using Google or your administrator password credentials on the Administrator Gateway.
               </p>
               <p>
                 2. <strong>Adding Additional Admins:</strong> You can assign new administrators directly via the form above, or by adding a document to the <code className="text-purple-300 bg-zinc-900 px-1 py-0.5 rounded">admins</code> collection in Firestore where the Document ID is the user's Firebase UID.

@@ -265,6 +265,7 @@ export interface AppNotification {
   createdAt: string;
   read: boolean;
   readBy?: string[];
+  dismissedBy?: string[];
   metadata?: {
     plan?: string;
     duration?: string;

@@ -58,7 +58,7 @@ async function uploadViaServerApiWithMetadata(
   folder: 'videos' | 'covers' | 'episodes',
   onProgress?: (percentage: number) => void
 ): Promise<UploadResult> {
-  const token = localStorage.getItem('piflix_admin_token') || 'admin_session';
+  const token = localStorage.getItem('piflix_admin_token') || '';
   const isCover = folder === 'covers';
 
   // For very large files (>80MB) that are videos, try chunked upload for maximum resilience

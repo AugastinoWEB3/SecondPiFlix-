@@ -32,8 +32,7 @@ service cloud.firestore {
         (request.auth.token.email != null && (
           request.auth.token.email.lower() == 'frank.gwaza.fg@gmail.com' ||
           request.auth.token.email == 'frank.gwaza.FG@gmail.com' ||
-          request.auth.token.email.lower() == 'admin@piflix.network' ||
-          request.auth.token.email.lower().matches('.*admin.*')
+          request.auth.token.email.lower() == 'admin@piflix.network'
         )) ||
         request.auth.token.role == 'admin' ||
         request.auth.token.admin == true
@@ -62,34 +61,34 @@ service cloud.firestore {
 
     // Content collection (movies and series)
     // All users can read the catalog.
-    // Permanent persistence for movies, TV series, seasons, and episodes across client and server synchronization.
+    // Only verified administrators can upload, edit, or delete catalog items.
     match /content/{contentId} {
       allow read: if true;
-      allow create, update: if true;
-      allow delete: if true;
+      allow create, update, delete: if isAdmin();
     }
 
     // Authoritative Published Releases & Snapshots
     // Public read access so both Web and Pi Browser users resolve the same active release.
+    // Only verified administrators can publish or update releases.
     match /releases/{releaseId} {
       allow read: if true;
-      allow create, update, delete: if true;
+      allow create, update, delete: if isAdmin();
     }
 
     match /published_releases/{releaseId} {
       allow read: if true;
-      allow create, update, delete: if true;
+      allow create, update, delete: if isAdmin();
     }
 
     match /published_snapshots/{snapshotId} {
       allow read: if true;
-      allow create, update, delete: if true;
+      allow create, update, delete: if isAdmin();
     }
 
     // Deleted content items registry for instant cross-device synchronization and purge
     match /deleted_items/{itemId} {
       allow read: if true;
-      allow create, update, delete: if true;
+      allow create, update, delete: if isAdmin();
     }
 
     // Settings collection (platform configuration, pricing, announcements)
@@ -104,8 +103,8 @@ service cloud.firestore {
     // Admin authorization collection (RBAC)
     // Only administrators can list, create, or modify administrator accounts.
     match /admins/{adminId} {
-      allow read: if isSignedIn();
-      allow create, update: if isAdmin() || (isSignedIn() && request.auth.uid == adminId);
+      allow read: if isAdmin();
+      allow create, update: if isAdmin();
       allow delete: if isAdmin() && isValidId(adminId) && request.auth.uid != adminId;
     }
 

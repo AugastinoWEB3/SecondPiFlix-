@@ -80,7 +80,8 @@
         "targetTab": { "type": "string", "maxLength": 50 },
         "createdAt": { "type": "string", "maxLength": 100 },
         "read": { "type": "boolean" },
-        "readBy": { "type": "array" }
+        "readBy": { "type": "array" },
+        "dismissedBy": { "type": "array" }
       },
       "required": ["userId", "title", "message", "type", "createdAt", "read"]
     },

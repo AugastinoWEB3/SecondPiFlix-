@@ -7,6 +7,7 @@ import {
   writeBatch,
   arrayUnion,
   getDocs,
+  getDoc,
   query,
   limit
 } from 'firebase/firestore';
@@ -27,8 +28,39 @@ function sanitizeForFirestore<T extends Record<string, any>>(obj: T): T {
 }
 
 /**
+ * Retrieve cached dismissed notification IDs for the specified user.
+ * Keys by unique user ID to strictly preserve user isolation.
+ */
+export function getLocalDismissedNotificationIds(userId: string): string[] {
+  if (!userId || typeof window === 'undefined') return [];
+  try {
+    const raw = localStorage.getItem(`piflix_dismissed_notifs_${userId}`);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed;
+    }
+  } catch (e) {}
+  return [];
+}
+
+/**
+ * Cache a dismissed notification ID locally for the specified user.
+ */
+export function addLocalDismissedNotificationId(userId: string, notificationId: string): void {
+  if (!userId || !notificationId || typeof window === 'undefined') return;
+  try {
+    const existing = getLocalDismissedNotificationIds(userId);
+    if (!existing.includes(notificationId)) {
+      existing.push(notificationId);
+      localStorage.setItem(`piflix_dismissed_notifs_${userId}`, JSON.stringify(existing));
+    }
+  } catch (e) {}
+}
+
+/**
  * Real-time listener for Firestore persistent notifications.
- * Automatically filters by current user identity and determines user-specific read status.
+ * Automatically filters by current user identity, determines user-specific read status,
+ * and hides any notifications permanently dismissed by this specific user.
  */
 export function subscribeToUserNotifications(
   currentUserId: string,
@@ -47,6 +79,13 @@ export function subscribeToUserNotifications(
 
           // Notification filtering: only include if broadcast ('all') or intended for current user
           if (targetUserId !== 'all' && targetUserId !== currentUserId) {
+            return;
+          }
+
+          // Dismissal filtering: If current user has dismissed this notification, hide it permanently
+          const dismissedByList: string[] = Array.isArray(data.dismissedBy) ? data.dismissedBy : [];
+          const localDismissed = getLocalDismissedNotificationIds(currentUserId);
+          if (dismissedByList.includes(currentUserId) || localDismissed.includes(docSnap.id)) {
             return;
           }
 
@@ -70,6 +109,7 @@ export function subscribeToUserNotifications(
             createdAt: data.createdAt || new Date().toISOString(),
             read: isRead,
             readBy: readByList,
+            dismissedBy: dismissedByList,
             metadata: data.metadata
           });
         });
@@ -274,4 +314,61 @@ export function formatNotificationTime(timestampStr: string): string {
   } catch (e) {
     return '';
   }
+}
+
+/**
+ * Permanently dismiss a notification for the specified user.
+ * Does NOT delete the notification document so other users continue to receive it.
+ * Persists user dismissal in Firestore (both notification doc arrayUnion & user doc),
+ * updates local storage cache, and syncs with backend server endpoint.
+ */
+export async function dismissNotificationForUser(
+  notificationId: string,
+  userId: string
+): Promise<boolean> {
+  if (!notificationId || !userId) return false;
+
+  // 1. Immediately store in local storage cache for instant offline & reload persistence
+  addLocalDismissedNotificationId(userId, notificationId);
+
+  // 2. Persist in Firestore notifications collection (append to dismissedBy array)
+  try {
+    const notifRef = doc(db, NOTIFICATIONS_COLLECTION, notificationId);
+    await setDoc(
+      notifRef,
+      {
+        dismissedBy: arrayUnion(userId)
+      },
+      { merge: true }
+    );
+  } catch (err) {
+    console.warn(`[Firestore Notifications] Failed to update dismissedBy for ${notificationId}:`, err);
+  }
+
+  // 3. Persist in user's profile document in Firestore (users/{userId}) for redundant cross-device sync
+  try {
+    const userRef = doc(db, 'users', userId);
+    await setDoc(
+      userRef,
+      {
+        dismissedNotificationIds: arrayUnion(notificationId)
+      },
+      { merge: true }
+    );
+  } catch (err) {
+    // Non-blocking
+  }
+
+  // 4. Sync with server backend endpoint
+  try {
+    await fetch('/api/notifications/dismiss', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: notificationId, userId })
+    });
+  } catch (e) {
+    // Non-blocking
+  }
+
+  return true;
 }

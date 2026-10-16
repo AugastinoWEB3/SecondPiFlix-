@@ -66,6 +66,8 @@ export const TRANSLATIONS: Record<SupportedLanguage, Record<string, string>> = {
     signInWithPi: 'Sign in with Pi',
     signOut: 'Sign Out',
     switchLogOut: 'Switch / Log out',
+    back: 'Back',
+    logout: 'Logout',
     play: 'Play',
     watchNow: 'Watch Now',
     viewSeasons: 'View Seasons',
@@ -129,6 +131,8 @@ export const TRANSLATIONS: Record<SupportedLanguage, Record<string, string>> = {
     signInWithPi: 'Sign in with Pi',
     signOut: 'Sign Out',
     switchLogOut: 'Switch / Log out',
+    back: 'Back',
+    logout: 'Logout',
     play: 'Play',
     watchNow: 'Watch Now',
     viewSeasons: 'View Seasons',
@@ -184,6 +188,8 @@ export const TRANSLATIONS: Record<SupportedLanguage, Record<string, string>> = {
     signInWithPi: 'Ingia kwa Pi Network',
     signOut: 'Toka',
     switchLogOut: 'Badilisha / Toka',
+    back: 'Rudi',
+    logout: 'Toka',
     play: 'Cheza',
     watchNow: 'Tazama Sasa',
     viewSeasons: 'Tazama Misimu',
@@ -239,6 +245,8 @@ export const TRANSLATIONS: Record<SupportedLanguage, Record<string, string>> = {
     signInWithPi: '通过 Pi Network 登录',
     signOut: '退出登录',
     switchLogOut: '切换账号 / 退出',
+    back: '返回',
+    logout: '退出',
     play: '播放',
     watchNow: '立即观看',
     viewSeasons: '查看各季',
@@ -883,7 +891,8 @@ export function useTranslation() {
       series: 'Series',
       trending: 'Trending',
       watchlist: 'My List',
-      myList: 'My List'
+      myList: 'My List',
+      back: 'Back'
     };
 
     const langDict = TRANSLATIONS[currentLang] || TRANSLATIONS['en-US'];

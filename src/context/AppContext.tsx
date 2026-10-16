@@ -3,7 +3,7 @@ import { Movie, TVSeries, Episode, User, AppSettings, WatchHistoryItem, Watchlis
 import { initialSettings, defaultUsers } from '../data/mockData';
 import { subscribeToContent, subscribeToDeletedItems, fetchSettingsFromFirestore, saveSettingsToFirestore, subscribeToSettings, fetchActiveRelease, subscribeToActiveRelease, publishCatalogRelease, fetchAuthoritativeDeletedIds } from '../lib/firebaseContent';
 import { resolveApiUrl } from '../lib/apiConfig';
-import { subscribeToUserNotifications, markNotificationAsRead, markAllNotificationsAsRead, createNotification } from '../lib/firebaseNotifications';
+import { subscribeToUserNotifications, markNotificationAsRead, markAllNotificationsAsRead, createNotification, dismissNotificationForUser } from '../lib/firebaseNotifications';
 import { auth, db } from '../lib/firebase';
 import { onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
@@ -87,6 +87,7 @@ interface AppContextType {
   notifications: AppNotification[];
   unreadNotifsCount: number;
   markNotificationsRead: (id?: string) => Promise<void>;
+  dismissNotification: (id: string) => Promise<void>;
 
   // Pi Payment Modal
   isPiPaymentOpen: boolean;
@@ -616,8 +617,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const effSeries = (freshSeries || seriesList).filter(s => !deletedIds.includes(s.id));
       const release = await publishCatalogRelease(adminToken, {
         publishedBy: publishedBy || currentUser.email || 'Admin',
-        currentMovies: effMovies,
-        currentSeries: effSeries,
+        ...(freshMovies ? { currentMovies: effMovies } : {}),
+        ...(freshSeries ? { currentSeries: effSeries } : {}),
         deletedIds
       });
       applyPublishedRelease(release);
@@ -826,7 +827,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         fetch(resolveApiUrl(`/api/settings?_t=${timestamp}`)).then(r => r.json()).catch(() => null),
         fetch(resolveApiUrl(`/api/history?userId=${currentUser.id}&_t=${timestamp}`)).then(r => r.json()).catch(() => []),
         fetch(resolveApiUrl(`/api/watchlist?userId=${currentUser.id}&_t=${timestamp}`)).then(r => r.json()).catch(() => []),
-        fetch(resolveApiUrl(`/api/notifications?_t=${timestamp}`)).then(r => r.json()).catch(() => []),
+        fetch(resolveApiUrl(`/api/notifications?userId=${currentUser.id}&_t=${timestamp}`)).then(r => r.json()).catch(() => []),
         fetch(resolveApiUrl(`/api/likes?userId=${currentUser.id}&_t=${timestamp}`)).then(r => r.json()).catch(() => [])
       ]);
 
@@ -1389,6 +1390,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
+  const dismissNotification = async (id: string) => {
+    if (!id || !currentUser?.id) return;
+    // 1. Optimistically update local state immediately for instant responsive feedback
+    setNotifications(prev => prev.filter(n => n.id !== id));
+    // 2. Persist user-specific dismissal in Firestore, localStorage, and backend
+    try {
+      await dismissNotificationForUser(id, currentUser.id);
+    } catch (e) {
+      console.warn('[Notifications] Failed to persist dismissal:', e);
+    }
+  };
+
   const openPiPayment = (plan: 'monthly' | 'annual' = 'monthly') => {
     setSelectedPlanForPayment(plan);
     setIsPiPaymentOpen(true);
@@ -1480,6 +1493,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         notifications,
         unreadNotifsCount,
         markNotificationsRead,
+        dismissNotification,
         isPiPaymentOpen,
         selectedPlanForPayment,
         openPiPayment,

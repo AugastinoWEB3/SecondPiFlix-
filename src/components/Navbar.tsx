@@ -1,14 +1,15 @@
 import React, { useState } from 'react';
 import {
-  Search, Bell, Sparkles, Sun, Moon, Shield, User as UserIcon, LogOut, Check, Film, Tv, TrendingUp, Bookmark, Loader2, AlertCircle, X, Globe
+  Search, Bell, Sparkles, Sun, Moon, Shield, User as UserIcon, LogOut, Check, Film, Tv, TrendingUp, Bookmark, Loader2, AlertCircle, X, Globe, ArrowLeft
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { PiFlixLogo } from './PiFlixLogo';
 import { UserAvatar } from './UserAvatar';
 import { AppNotification } from '../types';
-import { formatNotificationTime } from '../lib/firebaseNotifications';
 import { useTranslation, SUPPORTED_LANGUAGES, LanguageCode } from '../lib/i18n';
 import { getVisiblePiUsername, isUuidOrInternalId, PROFILE_EMOJI_OPTIONS } from '../lib/avatar';
+import { isPiBrowser } from '../lib/piAuth';
+import { SwipeableNotificationItem } from './SwipeableNotificationItem';
 
 export const Navbar: React.FC = () => {
   const {
@@ -23,6 +24,7 @@ export const Navbar: React.FC = () => {
     notifications,
     unreadNotifsCount,
     markNotificationsRead,
+    dismissNotification,
     movies,
     seriesList,
     openDetails,
@@ -41,6 +43,14 @@ export const Navbar: React.FC = () => {
   const [showNotifMenu, setShowNotifMenu] = useState(false);
   const [showProfileMenu, setShowProfileMenu] = useState(false);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+
+  // Distinguish Pi Browser / Pi Network environment from normal web application
+  const isPiBrowserSession = isPiBrowser() ||
+    (typeof window !== 'undefined' && (
+      window.location.hostname.includes('pinet.com') ||
+      window.location.hostname.includes('minepi.com') ||
+      /PiBrowser/i.test(window.navigator?.userAgent || '')
+    ));
 
   const isDark = theme === 'dark';
 
@@ -281,70 +291,22 @@ export const Navbar: React.FC = () => {
                       <p className="text-xs">No notifications yet</p>
                     </div>
                   ) : (
-                    notifications.map(n => (
-                      <div
-                        key={n.id}
-                        id={`notif-${n.id}`}
-                        onClick={() => handleNotificationClick(n)}
-                        className={`p-2.5 rounded-xl border transition cursor-pointer flex items-start gap-2.5 group relative ${
-                          n.read
-                            ? isDark
-                              ? 'bg-zinc-950/40 border-zinc-800/40 text-zinc-400 hover:bg-zinc-900/60'
-                              : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100/70'
-                            : isDark
-                            ? 'bg-purple-950/30 border-purple-800/40 text-white hover:bg-purple-900/40 shadow-xs'
-                            : 'bg-purple-50 border-purple-200 text-purple-900 hover:bg-purple-100/60 shadow-xs'
-                        }`}
-                      >
-                        {/* Cover image or type icon */}
-                        {n.coverImageUrl ? (
-                          <img
-                            src={n.coverImageUrl}
-                            alt=""
-                            className="w-10 h-10 rounded-lg object-cover shrink-0 border border-purple-500/20 bg-zinc-900"
-                            onError={(e) => {
-                              (e.target as HTMLElement).style.display = 'none';
-                            }}
-                          />
-                        ) : (
-                          <div
-                            className={`w-9 h-9 rounded-lg shrink-0 flex items-center justify-center ${
-                              n.type === 'premium'
-                                ? 'bg-amber-500/20 text-amber-400'
-                                : n.type === 'new_series'
-                                ? 'bg-sky-500/20 text-sky-400'
-                                : 'bg-purple-500/20 text-purple-400'
-                            }`}
-                          >
-                            {n.type === 'premium' ? (
-                              <Sparkles className="w-4 h-4" />
-                            ) : n.type === 'new_series' ? (
-                              <Tv className="w-4 h-4" />
-                            ) : (
-                              <Film className="w-4 h-4" />
-                            )}
-                          </div>
-                        )}
-
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center justify-between gap-1.5">
-                            <span className="font-bold text-xs truncate">{n.title}</span>
-                            {!n.read && (
-                              <span className="w-2 h-2 rounded-full bg-pink-500 shrink-0" title="Unread" />
-                            )}
-                          </div>
-                          <p className={`text-[11px] mt-0.5 break-words line-clamp-2 leading-relaxed ${isDark ? 'text-zinc-400' : 'text-slate-600'}`}>
-                            {n.message}
-                          </p>
-                          <div className="flex items-center justify-between mt-1.5 text-[10px] opacity-65">
-                            <span>{formatNotificationTime(n.createdAt)}</span>
-                            <span className="text-[10px] group-hover:underline text-purple-400 font-medium">
-                              {n.type === 'premium' ? 'View VIP' : 'Open details →'}
-                            </span>
-                          </div>
-                        </div>
+                    <>
+                      {notifications.map(n => (
+                        <SwipeableNotificationItem
+                          key={n.id}
+                          notification={n}
+                          isDark={isDark}
+                          onClick={handleNotificationClick}
+                          onDismiss={dismissNotification}
+                        />
+                      ))}
+                      <div className={`text-center pt-1 pb-0.5 text-[10px] tracking-tight font-medium select-none ${
+                        isDark ? 'text-zinc-500' : 'text-slate-400'
+                      }`}>
+                        Swipe card left or right to dismiss
                       </div>
-                    ))
+                    </>
                   )}
                 </div>
               </div>
@@ -658,16 +620,38 @@ export const Navbar: React.FC = () => {
                 </div>
 
                 <div className={`pt-2 border-t ${isDark ? 'border-zinc-800' : 'border-slate-200'}`}>
-                  <button
-                    onClick={() => {
-                      logout();
-                      setShowProfileMenu(false);
-                    }}
-                    className="w-full text-start px-3 py-2 rounded-lg hover:bg-rose-100/60 text-rose-500 transition flex items-center gap-2"
-                  >
-                    <LogOut className="w-4 h-4" />
-                    <span>{t('logout')}</span>
-                  </button>
+                  {isPiBrowserSession ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowProfileMenu(false);
+                        setShowEmojiPicker(false);
+                      }}
+                      className={`w-full text-start px-3 py-2 rounded-lg transition flex items-center gap-2 font-medium ${
+                        isDark
+                          ? 'hover:bg-zinc-800 text-zinc-300 hover:text-white'
+                          : 'hover:bg-slate-100 text-slate-700 hover:text-slate-900'
+                      }`}
+                      title={t('back', 'Back')}
+                      aria-label={t('back', 'Back')}
+                    >
+                      <ArrowLeft className="w-4 h-4 text-purple-400" />
+                      <span>{t('back', 'Back')}</span>
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        logout();
+                        setShowProfileMenu(false);
+                        setShowEmojiPicker(false);
+                      }}
+                      className="w-full text-start px-3 py-2 rounded-lg hover:bg-rose-100/60 text-rose-500 transition flex items-center gap-2 cursor-pointer"
+                    >
+                      <LogOut className="w-4 h-4" />
+                      <span>{t('logout', 'Logout')}</span>
+                    </button>
+                  )}
                 </div>
               </div>
             )}

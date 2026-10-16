@@ -36,6 +36,8 @@ export function isPiBrowser(): boolean {
   if (typeof window === 'undefined') return false;
   const ua = window.navigator?.userAgent || '';
   if (/PiBrowser/i.test(ua)) return true;
+  const host = window.location?.hostname || '';
+  if (host.includes('pinet.com') || host.includes('minepi.com')) return true;
   if (typeof (window as any).Pi?.getPiHostAppInfo === 'function') {
     try {
       const hostInfo = (window as any).Pi.getPiHostAppInfo();

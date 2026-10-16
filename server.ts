@@ -319,7 +319,7 @@ function hashPassword(password: string, salt: string): string {
   return crypto.pbkdf2Sync(password, salt, 10000, 64, 'sha512').toString('hex');
 }
 
-const ADMIN_JWT_SECRET = process.env.ADMIN_JWT_SECRET || ('piflix_sec_' + (firebaseConfig.projectId || 'empyrean_patrol_bvxch'));
+const ADMIN_JWT_SECRET = process.env.ADMIN_JWT_SECRET || ('piflix_sec_' + (firebaseConfig.projectId || 'empyrean-patrol-bvxch'));
 
 function generateAdminJwt(user: { uid: string; email: string; role: 'admin' }): string {
   const currentProjectId = firebaseConfig.projectId || 'empyrean-patrol-bvxch';
@@ -490,22 +490,7 @@ async function verifyAdmin(req: Request, res: Response, next: () => void) {
     }
   }
 
-  // Also support admin session header or development mode admin bypass
-  if (
-    token === 'admin_session' ||
-    token === 'admin' ||
-    req.headers['x-admin-request'] === 'true' ||
-    req.query.admin === 'true'
-  ) {
-    (req as any).adminUser = {
-      uid: 'owner_frank_gwaza',
-      email: SUPER_ADMIN_EMAIL,
-      role: 'admin'
-    };
-    return next();
-  }
-
-  return res.status(401).json({ error: 'Unauthorized: Firebase Administrator ID token required' });
+  return res.status(401).json({ error: 'Unauthorized: Valid Firebase Administrator ID token required' });
 }
 
 // Persistent Data Storage & Firestore Synchronization
@@ -2619,7 +2604,7 @@ app.post('/api/admin/auth/login', (req: Request, res: Response) => {
 
   return res.status(404).json({
     success: false,
-    error: 'Administrator account not found. Please click "Create Admin Account" to register.'
+    error: 'Administrator account not found or access is restricted.'
   });
 });
 
@@ -3124,7 +3109,9 @@ app.post('/api/content', verifyAdmin, (req: Request, res: Response) => {
     deletedContentIds.delete(id);
     movies = movies.filter(m => m.id !== id);
     movies.unshift(newMovie);
+    catalogMoviesMap.set(id, newMovie);
     saveContentStore();
+    syncActiveReleaseState();
 
     // Persist permanently to Firestore
     persistContentItemToFirestore(mapToContentItem(newMovie)).catch(err => {
@@ -3242,7 +3229,9 @@ app.post('/api/content', verifyAdmin, (req: Request, res: Response) => {
     });
     newSeries.seasonsCount = Math.max(1, seasonsList.filter(s => s.seriesId === id).length);
 
+    catalogSeriesMap.set(id, newSeries);
     saveContentStore();
+    syncActiveReleaseState();
 
     // Persist permanently to Firestore
     persistContentItemToFirestore(mapToContentItem(newSeries)).catch(err => {
@@ -3726,7 +3715,7 @@ app.get('/api/movies/:id', (req: Request, res: Response) => {
   res.json(movie);
 });
 
-app.post('/api/movies', (req: Request, res: Response) => {
+app.post('/api/movies', verifyAdmin, (req: Request, res: Response) => {
   const newMovie: Movie = {
     id: 'm-' + Date.now(),
     title: req.body.title || 'Untitled Movie',
@@ -3765,7 +3754,7 @@ app.post('/api/movies', (req: Request, res: Response) => {
   res.json({ success: true, movie: newMovie });
 });
 
-app.put('/api/movies/:id', (req: Request, res: Response) => {
+app.put('/api/movies/:id', verifyAdmin, (req: Request, res: Response) => {
   const index = movies.findIndex(m => m.id === req.params.id);
   if (index === -1) {
     return res.status(404).json({ error: 'Movie not found' });
@@ -3784,7 +3773,7 @@ app.put('/api/movies/:id', (req: Request, res: Response) => {
   res.json({ success: true, movie: movies[index] });
 });
 
-app.delete('/api/movies/:id', (req: Request, res: Response) => {
+app.delete('/api/movies/:id', verifyAdmin, (req: Request, res: Response) => {
   const index = movies.findIndex(m => m.id === req.params.id);
   if (index === -1) {
     return res.status(404).json({ error: 'Movie not found' });
@@ -3939,7 +3928,7 @@ app.get('/api/series/:id', (req: Request, res: Response) => {
   });
 });
 
-app.post('/api/series', (req: Request, res: Response) => {
+app.post('/api/series', verifyAdmin, (req: Request, res: Response) => {
   const newSeries: TVSeries = {
     id: 's-' + Date.now(),
     title: req.body.title || 'Untitled Series',
@@ -4003,7 +3992,7 @@ app.post('/api/series', (req: Request, res: Response) => {
   res.json({ success: true, series: newSeries });
 });
 
-app.put('/api/series/:id', (req: Request, res: Response) => {
+app.put('/api/series/:id', verifyAdmin, (req: Request, res: Response) => {
   const index = seriesList.findIndex(s => s.id === req.params.id);
   if (index === -1) return res.status(404).json({ error: 'Series not found' });
   deletedContentIds.delete(req.params.id);
@@ -4014,7 +4003,7 @@ app.put('/api/series/:id', (req: Request, res: Response) => {
   res.json({ success: true, series: seriesList[index] });
 });
 
-app.delete('/api/series/:id', (req: Request, res: Response) => {
+app.delete('/api/series/:id', verifyAdmin, (req: Request, res: Response) => {
   const index = seriesList.findIndex(s => s.id === req.params.id);
   if (index === -1) return res.status(404).json({ error: 'Series not found' });
   const deleted = seriesList.splice(index, 1);
@@ -4064,7 +4053,7 @@ app.get('/api/series/:id/seasons', (req: Request, res: Response) => {
   res.json({ seasons, episodes });
 });
 
-app.post('/api/seasons', (req: Request, res: Response) => {
+app.post('/api/seasons', verifyAdmin, (req: Request, res: Response) => {
   const { seriesId, seasonNumber, seasonName, title } = req.body;
   const sNum = Number(seasonNumber) || 1;
   const sName = seasonName || title || `Season ${sNum}`;
@@ -4100,7 +4089,7 @@ app.post('/api/seasons', (req: Request, res: Response) => {
   res.json({ success: true, season: newSeason });
 });
 
-app.put('/api/seasons/:id', (req: Request, res: Response) => {
+app.put('/api/seasons/:id', verifyAdmin, (req: Request, res: Response) => {
   const season = seasonsList.find(s => s.id === req.params.id);
   if (!season) return res.status(404).json({ error: 'Season not found' });
   
@@ -4114,7 +4103,7 @@ app.put('/api/seasons/:id', (req: Request, res: Response) => {
   res.json({ success: true, season });
 });
 
-app.delete('/api/seasons/:id', (req: Request, res: Response) => {
+app.delete('/api/seasons/:id', verifyAdmin, (req: Request, res: Response) => {
   const sIdx = seasonsList.findIndex(s => s.id === req.params.id);
   if (sIdx === -1) return res.status(404).json({ error: 'Season not found' });
   const [deletedSeason] = seasonsList.splice(sIdx, 1);
@@ -4132,7 +4121,7 @@ app.delete('/api/seasons/:id', (req: Request, res: Response) => {
   res.json({ success: true, season: deletedSeason });
 });
 
-app.post('/api/series/:id/seasons/:seasonId/episodes', (req: Request, res: Response) => {
+app.post('/api/series/:id/seasons/:seasonId/episodes', verifyAdmin, (req: Request, res: Response) => {
   const { id: seriesId, seasonId } = req.params;
   const season = seasonsList.find(s => s.id === seasonId && s.seriesId === seriesId);
   
@@ -4169,7 +4158,7 @@ app.post('/api/series/:id/seasons/:seasonId/episodes', (req: Request, res: Respo
   res.json({ success: true, episode: newEpisode });
 });
 
-app.post('/api/series/:id/seasons/:seasonId/episodes/batch', (req: Request, res: Response) => {
+app.post('/api/series/:id/seasons/:seasonId/episodes/batch', verifyAdmin, (req: Request, res: Response) => {
   const { id: seriesId, seasonId } = req.params;
   const season = seasonsList.find(s => s.id === seasonId && s.seriesId === seriesId);
   const incomingEps = Array.isArray(req.body.episodes) ? req.body.episodes : [];
@@ -4209,7 +4198,7 @@ app.post('/api/series/:id/seasons/:seasonId/episodes/batch', (req: Request, res:
   res.json({ success: true, count: createdEps.length, episodes: createdEps });
 });
 
-app.post('/api/episodes', (req: Request, res: Response) => {
+app.post('/api/episodes', verifyAdmin, (req: Request, res: Response) => {
   const season = seasonsList.find(s => s.id === req.body.seasonId);
   const newEpisode: Episode = {
     id: req.body.id || 'ep-' + Date.now(),
@@ -4240,7 +4229,7 @@ app.post('/api/episodes', (req: Request, res: Response) => {
   res.json({ success: true, episode: newEpisode });
 });
 
-app.put('/api/episodes/:id', (req: Request, res: Response) => {
+app.put('/api/episodes/:id', verifyAdmin, (req: Request, res: Response) => {
   const index = episodesList.findIndex(e => e.id === req.params.id);
   if (index === -1) return res.status(404).json({ error: 'Episode not found' });
   
@@ -4257,7 +4246,7 @@ app.put('/api/episodes/:id', (req: Request, res: Response) => {
   res.json({ success: true, episode: episodesList[index] });
 });
 
-app.delete('/api/episodes/:id', (req: Request, res: Response) => {
+app.delete('/api/episodes/:id', verifyAdmin, (req: Request, res: Response) => {
   const index = episodesList.findIndex(e => e.id === req.params.id);
   if (index === -1) return res.status(404).json({ error: 'Episode not found' });
   const deleted = episodesList.splice(index, 1)[0];
@@ -4476,7 +4465,12 @@ app.get('/api/notifications', (req: Request, res: Response) => {
   const queryUserId = req.query.userId as string | undefined;
   if (queryUserId) {
     const userNotifs = notifications
-      .filter(n => n.userId === 'all' || n.userId === queryUserId)
+      .filter(n => {
+        if (n.userId !== 'all' && n.userId !== queryUserId) return false;
+        const dismissedByList = (n as any).dismissedBy;
+        if (Array.isArray(dismissedByList) && dismissedByList.includes(queryUserId)) return false;
+        return true;
+      })
       .map(n => {
         const readByList = Array.isArray(n.readBy) ? n.readBy : [];
         const isRead = n.userId === queryUserId ? (n.read || readByList.includes(queryUserId)) : readByList.includes(queryUserId);
@@ -4522,6 +4516,23 @@ app.post('/api/notifications/read', (req: Request, res: Response) => {
     });
   }
   res.json({ success: true });
+});
+
+app.post('/api/notifications/dismiss', (req: Request, res: Response) => {
+  const { id, userId } = req.body;
+  if (!id || !userId) {
+    return res.status(400).json({ error: 'Notification ID and userId required' });
+  }
+  const notif = notifications.find(n => n.id === id);
+  if (notif) {
+    if (!Array.isArray((notif as any).dismissedBy)) {
+      (notif as any).dismissedBy = [];
+    }
+    if (!(notif as any).dismissedBy.includes(userId)) {
+      (notif as any).dismissedBy.push(userId);
+    }
+  }
+  res.json({ success: true, id, userId });
 });
 
 // PI NETWORK PAYMENT INTEGRATION
